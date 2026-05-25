@@ -10,12 +10,14 @@ sys.path.append(str(Path(__file__).parent.parent))
 import pickle
 import numpy as np
 import pandas as pd
+from datetime import datetime, timezone
 
 from config.db import (
     get_collection,
     load_model,
     COLLECTION_FEATURE_STORE,
     COLLECTION_MODEL_REGISTRY,
+    COLLECTION_LIME,
 )
 
 SEQ_LEN     = 7
@@ -123,6 +125,13 @@ def run() -> None:
     plt.tight_layout()
     fig.savefig(OUT_DIR / "lime_explanation.png", dpi=150)
     plt.close(fig)
+
+    # Persist to MongoDB so the dashboard can load it without local files
+    get_collection(COLLECTION_LIME).insert_one({
+        "created_at":  datetime.now(timezone.utc),
+        "model_type":  model_type,
+        "explanation": [{"feature": f, "weight": w} for f, w in exp_list],
+    })
 
     print(f"LIME artefacts saved to {OUT_DIR}")
 

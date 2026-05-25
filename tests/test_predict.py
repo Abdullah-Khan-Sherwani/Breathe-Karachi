@@ -93,7 +93,7 @@ class TestForecastDates:
         scaler.transform.return_value = np.zeros((1, len(FEAT_COLS)))
 
         with (
-            patch.object(pred_mod, "_latest_active_type", return_value="ridge"),
+            patch.object(pred_mod, "_best_active_type", return_value="ridge"),
             # patch in pred_mod's namespace (imported via `from config.db import load_model`)
             patch.object(pred_mod, "load_model", return_value=(
                 model, scaler,
@@ -112,6 +112,6 @@ class TestForecastDates:
             assert fc["date"] == expected[i]
 
     def test_no_active_model_raises(self):
-        with patch.object(pred_mod, "_latest_active_type", side_effect=ValueError("No active")):
+        with patch.object(pred_mod, "_best_active_type", side_effect=ValueError("No active")):
             with pytest.raises(ValueError, match="No active"):
                 pred_mod.run()
