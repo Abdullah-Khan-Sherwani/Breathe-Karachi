@@ -17,6 +17,7 @@ COLLECTION_FEATURE_STORE  = "feature_store"
 COLLECTION_MODEL_REGISTRY = "model_registry"
 COLLECTION_PREDICTIONS    = "predictions"
 COLLECTION_MODEL_LOGS     = "model_logs"
+COLLECTION_LIME           = "lime_explanations"
 
 
 def get_client():
@@ -46,7 +47,7 @@ def save_model(model, scaler, model_type: str, metrics: dict, feature_cols: list
     """
     # Serialize model via temp file (BytesIO not supported by Keras 3 .save())
     if model_type == "lstm":
-        with tempfile.NamedTemporaryFile(suffix=".h5", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".keras", delete=False) as tmp:
             tmp_path = tmp.name
         try:
             model.save(tmp_path)
@@ -99,7 +100,7 @@ def load_model(model_type: str = "lstm"):
 
     # Deserialize model via temp file
     if model_type == "lstm":
-        with tempfile.NamedTemporaryFile(suffix=".h5", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".keras", delete=False) as tmp:
             tmp.write(bytes(doc["model_binary"]))
             tmp_path = tmp.name
         try:

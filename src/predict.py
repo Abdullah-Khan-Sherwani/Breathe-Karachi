@@ -24,15 +24,15 @@ from config.db import (
 SEQ_LEN = 7
 
 
-def _latest_active_type() -> str:
-    """Return model_type of the most recently trained active model (any type)."""
-    doc = get_collection(COLLECTION_MODEL_REGISTRY).find_one(
-        {"status": "active"},
-        sort=[("trained_at", -1)],
-    )
-    if doc is None:
+def _best_active_type() -> str:
+    """Return model_type of the active model with the lowest RMSE."""
+    docs = list(get_collection(COLLECTION_MODEL_REGISTRY).find(
+        {"status": "active", "RMSE": {"$exists": True}},
+        {"model_type": 1, "RMSE": 1},
+    ))
+    if not docs:
         raise ValueError("No active model found in model_registry.")
-    return doc["model_type"]
+    return min(docs, key=lambda d: d["RMSE"])["model_type"]
 
 
 def _load_feature_store(n_rows: int) -> pd.DataFrame:
@@ -68,7 +68,7 @@ def _predict_lstm(model, scaler, feat_cols: list, df: pd.DataFrame) -> np.ndarra
 
 
 def run() -> None:
-    model_type = _latest_active_type()
+    model_type = _best_active_type()
     model, scaler, metadata = load_model(model_type)
     feat_cols = _feature_cols(metadata)
     model_id  = metadata["_id"]
