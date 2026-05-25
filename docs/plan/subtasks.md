@@ -43,11 +43,11 @@ AQI_lag_1, AQI_lag_2, AQI_roll_mean_3, AQI_roll_std_3, AQI_diff
 
 **Approach:** Direct multi-output regression — each model predicts `[AQI_t+1, AQI_t+2, AQI_t+3]` simultaneously from the 28 input features.
 
-- [ ] `src/models/__init__.py`
-- [ ] `src/models/ridge.py` — `MultiOutputRegressor(Ridge(alpha=1.0))`
-- [ ] `src/models/lgbm_model.py` — `MultiOutputRegressor(LGBMRegressor(n_estimators=300, lr=0.05, max_depth=6))`
-- [ ] `src/models/lstm_model.py` — `LSTM(64) → Dropout(0.2) → LSTM(32) → Dropout(0.2) → Dense(3)`, SEQ_LEN=7
-- [ ] `src/train.py` — loads data, time-aware split (last 30 days = test), trains all three, saves best
+- [x] `src/models/__init__.py`
+- [x] `src/models/ridge.py` — `MultiOutputRegressor(Ridge(alpha=1.0))`
+- [x] `src/models/lgbm_model.py` — `MultiOutputRegressor(LGBMRegressor(n_estimators=300, lr=0.05, max_depth=6))`
+- [x] `src/models/lstm_model.py` — `LSTM(64) → Dropout(0.2) → LSTM(32) → Dropout(0.2) → Dense(3)`, SEQ_LEN=7
+- [x] `src/train.py` — loads data, time-aware split (last 30 days = test), trains all three, saves best
 
 **Metrics to compute per model:** MAE, RMSE, R² for each of the 3 horizons + average RMSE (used for ranking).
 
@@ -101,7 +101,7 @@ AQI_lag_1, AQI_lag_2, AQI_roll_mean_3, AQI_roll_std_3, AQI_diff
 |---------|--------|
 | 1 — Data Pipeline | ✅ Done |
 | 2 — EDA Notebook | ⬜ Pending |
-| 3 — Training Pipeline | ⬜ Pending |
-| 4 — Inference & Explainability | ⬜ Pending |
-| 5 — CI/CD & Deployment | ⬜ Pending |
+| 3 — Training Pipeline | ✅ Done |
+| 4 — Inference & Explainability | ✅ Done |
+| 5 — CI/CD & Deployment | ✅ Done |
 | 6 — Dashboard | ⬜ Pending |

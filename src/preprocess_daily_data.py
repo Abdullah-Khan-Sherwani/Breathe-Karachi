@@ -33,7 +33,7 @@ def cap_iqr(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_log_transforms(df: pd.DataFrame) -> pd.DataFrame:
-    df["log_PM2.5"] = np.log1p(df["PM2.5"])
+    df["log_PM2_5"] = np.log1p(df["PM2_5"])
     df["log_CO"]    = np.log1p(df["CO"])
     return df
 

@@ -23,7 +23,7 @@ AIR_PARAMS     = "us_aqi,pm2_5,pm10,nitrogen_dioxide,sulphur_dioxide,carbon_mono
 WEATHER_PARAMS = "temperature_2m,relative_humidity_2m,precipitation"
 
 COL_MAP = {
-    "us_aqi": "AQI", "pm2_5": "PM2.5", "pm10": "PM10",
+    "us_aqi": "AQI", "pm2_5": "PM2_5", "pm10": "PM10",
     "nitrogen_dioxide": "NO2", "sulphur_dioxide": "SO2",
     "carbon_monoxide": "CO", "ozone": "O3",
     "temperature_2m": "Temperature", "relative_humidity_2m": "Humidity",
@@ -66,7 +66,7 @@ def backfill(start: date = BACKFILL_START, end: date = None) -> None:
         if df is None or df.empty:
             continue
         upsert(to_daily_record(day, df))
-    print(f"Backfill complete: {start} → {end}")
+    print(f"Backfill complete: {start} to {end}")
 
 
 if __name__ == "__main__":
