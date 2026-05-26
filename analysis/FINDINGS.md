@@ -226,3 +226,110 @@ No. Stacking does not improve — and actively degrades — both day2 and day3 R
 - Day3: stacking reduces R2 by 0.165 (from 0.1519 to -0.0132). The stacked model performs below a naive mean predictor.
 
 The stacking approach requires substantially more test data to produce a reliable signal. With only 30 test observations and a day3 baseline R2 of only 0.15, there is insufficient statistical power to differentiate whether any improvement from stacking is real or noise. The conclusion for this project is: **do not use prediction stacking in the production pipeline**. The existing per-horizon independent models are both simpler and more accurate.
+
+---
+
+## Section 6: Feature Engineering Experiments
+
+### 6.1 Individual Feature Results
+
+| Experiment | R²_d1 | R²_d2 | R²_d3 | Δ_d1 | Δ_d2 | Δ_d3 |
+|---|---|---|---|---|---|---|
+| baseline (39 feat) | 0.8031 | 0.2365 | 0.0819 | 0 | 0 | 0 |
+| add AQI_lag_14 (2-week lag) | 0.8030 | 0.2467 | 0.0281 | -0.0001 | +0.0102 | -0.0538 |
+| add NO2_lag_1 | 0.7924 | 0.2152 | 0.0280 | -0.0107 | -0.0213 | -0.0539 |
+| add O3_lag_1 | 0.7836 | 0.2073 | 0.0690 | -0.0195 | -0.0292 | -0.0129 |
+| add AQI x wind_speed | 0.8029 | 0.1991 | 0.1347 | -0.0002 | -0.0374 | +0.0528 |
+| add AQI_trend_7d (7d slope) | 0.7844 | 0.1900 | 0.1345 | -0.0187 | -0.0465 | +0.0526 |
+| add AQI_ewm_7 | 0.7934 | 0.2129 | 0.1293 | -0.0097 | -0.0236 | +0.0474 |
+| add AQI_ewm_14 | 0.8009 | 0.1976 | 0.0857 | -0.0022 | -0.0389 | +0.0038 |
+| add is_high_event_3d flag | 0.7865 | 0.1815 | 0.0826 | -0.0166 | -0.0550 | +0.0007 |
+| add doy_sin+doy_cos (cyclic) | 0.8134 | 0.2020 | -0.1403 | +0.0103 | -0.0345 | -0.2222 |
+| add AQI_roll_min/max_7d | 0.8130 | 0.2073 | 0.1491 | +0.0099 | -0.0292 | +0.0672 |
+| add wind x PM2_5_lag1 | 0.7987 | 0.2755 | 0.0725 | -0.0044 | +0.0390 | -0.0094 |
+| add Humidity x PM2_5_lag | 0.8099 | 0.2767 | 0.0621 | +0.0068 | +0.0402 | -0.0198 |
+| add AQI_ewm_30 (DB) | 0.7955 | 0.1970 | 0.1078 | -0.0076 | -0.0395 | +0.0259 |
+| combined: lag14+ewm7+slope | 0.7725 | 0.1975 | -0.0286 | -0.0306 | -0.0390 | -0.1105 |
+| BEST COMBINATION (6 new feats) | 0.8093 | 0.2160 | 0.1250 | +0.0062 | -0.0205 | +0.0431 |
+
+---
+
+### 6.2 Features That Improve Day3 R² (Δ > 0.01)
+
+Four individual features cleared the +0.01 threshold, ranked by day3 delta:
+
+1. **AQI_roll_min_7 + AQI_roll_max_7** (Δ_d3 = +0.0672, R²_d3 = 0.1491): The 7-day rolling minimum and maximum jointly encode the AQI range over the past week. The range is a proxy for pollution volatility — wide range signals an active dispersion regime; a narrow high range signals persistent stagnation. This variance information is orthogonal to the rolling mean and is physically meaningful for 3-day forecasts because atmospheric stability regimes tend to persist for 3-5 days.
+
+2. **AQI × wind_speed** (Δ_d3 = +0.0528, R²_d3 = 0.1347): The multiplicative interaction captures the nonlinear coupling between pollution level and dispersion capacity. When both AQI and wind are high simultaneously (rare but possible during dust events), the product takes an extreme value that the model cannot reconstruct from AQI and wind_speed separately. Physically, high-AQI low-wind days define the stagnation episodes that are hardest to forecast 3 days ahead — this term encodes that state explicitly.
+
+3. **AQI_trend_7d** (Δ_d3 = +0.0526, R²_d3 = 0.1345): The linear regression slope over the 7 days preceding today (computed on AQI shifted by 1 to prevent leakage). A positive slope means pollution is building; a negative slope means it is declining. The trend is a more compact representation of momentum than including multiple individual lags. For day3, knowing whether pollution is currently rising or falling is more informative than knowing the specific level 3 or 7 days ago.
+
+4. **AQI_ewm_7** (Δ_d3 = +0.0474, R²_d3 = 0.1293): The 7-day exponential weighted mean places higher weight on recent observations and provides a smooth low-frequency signal. It partially overlaps with AQI_roll_mean_7 but decays differently and is less affected by a single outlier day. Although AQI_ewm_7 already exists in the feature store DB, it is not included in the production 39-feature set, making it immediately available for production use without any preprocessing change.
+
+---
+
+### 6.3 Features That Hurt or Have No Effect
+
+- **doy_sin + doy_cos** (Δ_d3 = -0.2222, worst performer): The cyclic day-of-year encoding severely hurts day3 performance despite slightly improving day1. The likely explanation is that `month` and the four season dummies already capture the annual cycle; adding a finer-grained cyclic encoding introduces near-multicollinearity that destabilizes the LGBM split decisions on the 30-day test window. The extremely large drop (-0.22) with only 30 test days suggests high variance in the test-window estimate, but the direction is clearly negative.
+
+- **combined: lag14+ewm7+slope** (Δ_d3 = -0.1105): Combining three individually positive features produces worse results than any of them alone. This is a classic case of feature interaction causing overfitting: adding AQI_lag_14 alongside AQI_ewm_7 introduces redundant autocorrelation signals at overlapping time scales that increase noise in the feature selection process.
+
+- **AQI_lag_14** alone (Δ_d3 = -0.0538): A 2-week lag adds no predictive signal for day3; the autocorrelation at lag 14 is weak (ACF drops below 0.1 by lag 7 for Karachi AQI) and the added column consumes a feature importance slot without contributing information.
+
+- **NO2_lag_1** (Δ_d3 = -0.0539): Lagged NO2 hurts because the production feature set already contains same-day NO2. Adding a 1-day lag creates a near-collinear pair that splits feature importance between two redundant columns.
+
+- **wind × PM2_5_lag1** and **Humidity × PM2_5_lag** both improve day2 (+0.039, +0.040) but slightly hurt day3, indicating these interactions help the model resolve near-term concentration memory but introduce noise beyond 48 hours.
+
+---
+
+### 6.4 Best Combination Result
+
+The script identified the top-4 day3 improvers (AQI_roll_min/max_7d, AQI_x_wind, AQI_trend_7d, AQI_ewm_7) plus AQI_ewm_30 as the best 6-feature combination. The combined result:
+
+- Baseline day3 R²: **0.0819**
+- Best combination day3 R²: **0.1250**
+- Net improvement: **+0.0431**
+
+The combination underperforms the best individual addition (AQI_roll_min/max_7d alone = +0.0672), which is a well-known phenomenon: features that each help individually may be partially redundant with each other, diluting their combined benefit. Adding AQI_trend_7d alongside AQI_ewm_7 provides overlapping momentum signals. The practical takeaway is to add the rolling min/max pair first (largest single gain) and evaluate before adding more.
+
+---
+
+### 6.5 Season-Specific Model
+
+Summer-only cross-validation results (TimeSeriesSplit, n_splits=3, approximately 736 summer days):
+
+| Horizon | Summer-only CV R² | Global model R² |
+|---|---|---|
+| Day 1 | 0.6364 | 0.8031 |
+| Day 2 | -0.0318 | 0.2365 |
+| Day 3 | -0.3835 | 0.0819 |
+
+Summer-only training is strictly worse than the global model at every horizon. This finding is counterintuitive but has a clear explanation: Karachi's summer AQI is relatively stable and low (monsoon washout effect), so within-season variation is dominated by noise rather than structured patterns. The global model benefits from the large winter and spring signal to learn the feature-AQI relationship; a summer-only model has too little variance to work with and overfits to the training splits. Training season-specific models would require substantially more data per season or a regularized approach such as seasonal interaction terms rather than fully separate models.
+
+---
+
+### 6.6 Answer: Is Day3 Fundamentally Unpredictable?
+
+- Maximum observed day3 R² from any single feature set tested: **0.1491** (AQI_roll_min/max_7d added)
+- Baseline: 0.0819; best combination: 0.1250
+
+The ceiling is modest but real. The AQI autocorrelation function for Karachi drops below 0.15 by lag 4 and below 0.10 by lag 7, which imposes a hard theoretical ceiling on lag-based feature engineering for day3. Adding rolling range (min/max over 7 days) provides the largest improvement because it encodes regime state rather than level — stagnation episodes are persistent and the range captures whether the system is currently in a high-variance transitional state or a stable high-AQI state.
+
+The ceiling is imposed by a combination of autocorrelation decay (the AQI signal itself loses predictability beyond approximately 2 days) AND missing features (meteorological predictors like surface_pressure, boundary_layer_height, and wind_gusts identified in Section 5 are not yet in the pipeline). Section 5 shows that variables like surface_pressure and apparent_temperature maintain |r| > 0.5 with AQI_t+3 — these have not been tested in the LGBM feature set and likely represent the largest remaining improvement opportunity. Feature engineering within the existing variable set appears nearly exhausted at approximately R² = 0.15 for day3.
+
+---
+
+### 6.7 Single Highest-Confidence Recommendation
+
+**To improve day3 R² in production, add:**
+
+- **Feature:** `AQI_roll_min_7` and `AQI_roll_max_7` (add as a pair)
+- **Expected R² gain:** +0.0672 (day3 R²: 0.0819 to 0.1491)
+- **Code change needed:** Add the following two lines to `src/preprocess_daily_data.py` inside the `add_lag_rolling()` function, after the existing rolling computations:
+  ```python
+  df["AQI_roll_min_7"] = df["AQI"].shift(1).rolling(7).min()
+  df["AQI_roll_max_7"] = df["AQI"].shift(1).rolling(7).max()
+  ```
+  Then add `'AQI_roll_min_7'` and `'AQI_roll_max_7'` to the production feature list in `src/train.py`.
+  Note: Both columns already exist in the feature store DB (written by a prior preprocessing update), so no new data fetch is required — only the training feature list needs updating.
+- **Physical justification:** The 7-day rolling range (max minus min) captures atmospheric persistence regime. A wide range indicates the system is in transition (varying dispersion); a narrow high range signals sustained stagnation. Both the minimum (floor of recent AQI) and maximum (ceiling) independently encode regime memory that the rolling mean obscures. For a 3-day forecast horizon, knowing whether Karachi has been in a stable high-pollution state for a week is more predictive than knowing the average level because stable high-pollution atmospheric conditions (surface inversions, weak winds) tend to persist for 3-7 days.

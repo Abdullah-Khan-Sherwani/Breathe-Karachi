@@ -1,0 +1,16 @@
+experiment,features_added,r2_d1,r2_d2,r2_d3,delta_d1,delta_d2,delta_d3
+add AQI_lag_14 (2-week lag),['AQI_lag_14'],0.803,0.2467,0.0281,-0.0001,0.0102,-0.0538
+add NO2_lag_1,['NO2_lag_1'],0.7924,0.2152,0.028,-0.0107,-0.0213,-0.0539
+add O3_lag_1,['O3_lag_1'],0.7836,0.2073,0.069,-0.0195,-0.0292,-0.0129
+add AQI x wind_speed,['AQI_x_wind'],0.8029,0.1991,0.1347,-0.0002,-0.0374,0.0528
+add AQI_trend_7d (7d slope),['AQI_trend_7d'],0.7844,0.19,0.1345,-0.0187,-0.0465,0.0526
+add AQI_ewm_7,['AQI_ewm_7'],0.7934,0.2129,0.1293,-0.0097,-0.0236,0.0474
+add AQI_ewm_14,['AQI_ewm_14'],0.8009,0.1976,0.0857,-0.0022,-0.0389,0.0038
+add is_high_event_3d flag,['is_high_event_3d'],0.7865,0.1815,0.0826,-0.0166,-0.055,0.0007
+add doy_sin+doy_cos (cyclic),"['doy_sin', 'doy_cos']",0.8134,0.202,-0.1403,0.0103,-0.0345,-0.2222
+add AQI_roll_min/max_7d,"['AQI_roll_min_7', 'AQI_roll_max_7']",0.813,0.2073,0.1491,0.0099,-0.0292,0.0672
+add wind x PM2_5_lag1,['wind_x_PM2_5_lag1'],0.7987,0.2755,0.0725,-0.0044,0.039,-0.0094
+add Humidity x PM2_5_lag,['Humidity_x_PM2_5_lag'],0.8099,0.2767,0.0621,0.0068,0.0402,-0.0198
+add AQI_ewm_30 (DB),['AQI_ewm_30'],0.7955,0.197,0.1078,-0.0076,-0.0395,0.0259
+combined: lag14+ewm7+slope,"['AQI_lag_14', 'AQI_ewm_7', 'AQI_trend_7d']",0.7725,0.1975,-0.0286,-0.0306,-0.039,-0.1105
+best_combination,"['AQI_roll_min_7', 'AQI_roll_max_7', 'AQI_x_wind', 'AQI_trend_7d', 'AQI_ewm_7', 'AQI_ewm_30']",0.8093,0.216,0.125,0.0062,-0.0205,0.0431
