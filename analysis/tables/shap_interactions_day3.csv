@@ -1,0 +1,11 @@
+feature_1,feature_2,mean_abs_interaction
+log_PM2_5,AQI_roll_mean_7,0.5075622523408913
+log_PM2_5,wind_sin,0.4022555109464075
+log_PM2_5,Temperature_roll_mean_7,0.3316663018857032
+log_PM2_5,Temperature,0.3049673408283039
+log_PM2_5,AQI_roll_std_7,0.2676181680564595
+SO2,log_PM2_5,0.25127630442391186
+PM10,log_PM2_5,0.21234402224611917
+AQI_roll_std_7,month,0.20226097495495446
+log_CO,AQI_roll_mean_7,0.19605896966045702
+wind_speed_lag_1,AQI_roll_std_7,0.17292028337505355

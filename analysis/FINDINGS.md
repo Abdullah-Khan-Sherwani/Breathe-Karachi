@@ -333,3 +333,149 @@ The ceiling is imposed by a combination of autocorrelation decay (the AQI signal
   Then add `'AQI_roll_min_7'` and `'AQI_roll_max_7'` to the production feature list in `src/train.py`.
   Note: Both columns already exist in the feature store DB (written by a prior preprocessing update), so no new data fetch is required — only the training feature list needs updating.
 - **Physical justification:** The 7-day rolling range (max minus min) captures atmospheric persistence regime. A wide range indicates the system is in transition (varying dispersion); a narrow high range signals sustained stagnation. Both the minimum (floor of recent AQI) and maximum (ceiling) independently encode regime memory that the rolling mean obscures. For a 3-day forecast horizon, knowing whether Karachi has been in a stable high-pollution state for a week is more predictive than knowing the average level because stable high-pollution atmospheric conditions (surface inversions, weak winds) tend to persist for 3-7 days.
+
+
+---
+
+## Section 2: SHAP Feature Importance
+
+### 2.1 Day1 vs Day3: What Features Actually Drive Each Horizon
+
+**Top 10 Day1 features (by mean |SHAP|):**
+
+| Rank | Feature | mean |SHAP| |
+|---|---|---|
+| 1 | log_PM2_5 | 14.1035 |
+| 2 | PM10 | 1.3354 |
+| 3 | O3 | 1.2929 |
+| 4 | AQI | 0.8123 |
+| 5 | SO2 | 0.6179 |
+| 6 | log_CO | 0.5589 |
+| 7 | PM10_lag_1 | 0.5518 |
+| 8 | AQI_roll_std_7 | 0.4294 |
+| 9 | Humidity | 0.4202 |
+| 10 | AQI_lag_1 | 0.4184 |
+
+**Top 10 Day3 features (by mean |SHAP|):**
+
+| Rank | Feature | mean |SHAP| |
+|---|---|---|
+| 1 | log_PM2_5 | 5.8845 |
+| 2 | AQI_roll_std_7 | 2.2281 |
+| 3 | Temperature | 2.0868 |
+| 4 | Temperature_roll_mean_7 | 1.9741 |
+| 5 | AQI_roll_mean_7 | 1.9155 |
+| 6 | month | 1.6625 |
+| 7 | SO2 | 1.2123 |
+| 8 | PM10_lag_1 | 1.0598 |
+| 9 | PM10 | 0.8717 |
+| 10 | wind_speed_lag_1 | 0.7916 |
+
+**In top-10 for Day1 but NOT Day3 (autoregressive-only features):**
+O3, AQI_lag_1, AQI (current-day), log_CO, Humidity
+
+**In top-10 for Day3 but NOT Day1 (long-range signal features):**
+wind_speed_lag_1, AQI_roll_mean_7, Temperature_roll_mean_7, month, Temperature
+
+---
+
+### 2.2 Key Finding: Is Day1 Success Due to Autoregressive Features?
+
+No. The dominant driver of Day1 performance is log_PM2_5, which alone accounts for 56.5% of total mean |SHAP| (14.10 out of 24.96). AQI_lag_1 ranks only 10th and contributes just 1.7% of total SHAP weight. The remaining 98.3% of SHAP attribution comes from features other than AQI_lag_1.
+
+The Day1 model succeeds primarily because current pollutant concentrations -- especially fine particulate matter (log_PM2_5) and coarse particulates (PM10, O3) -- are strong same-day predictors of next-day AQI. This is a physically valid signal (pollutant persistence), not a data-leakage artefact from autoregressive lag use.
+
+---
+
+### 2.3 Day3 Signal Features
+
+log_PM2_5 remains the single most important feature at Day3 (mean |SHAP| = 5.88), though its importance drops by 58% relative to Day1 (14.10) as the signal decays over the forecast horizon.
+
+The Day3 top features shift strongly toward temporal and meteorological context:
+
+- AQI_roll_std_7 (rank 2, |SHAP| = 2.23): Weekly AQI variability captures pollution regime -- high-variance weeks signal unstable conditions where 3-day forecasts are harder; the model uses variance as a regime flag.
+- Temperature / Temperature_roll_mean_7 (ranks 3-4): Karachi AQI is strongly seasonal; temperature proxies monsoon timing and atmospheric stability.
+- AQI_roll_mean_7 (rank 5): 7-day mean AQI as baseline persistence for longer horizons.
+- month (rank 6, |SHAP| = 1.66): Direct seasonal signal -- Karachi worst AQI episodes are winter (Nov-Feb); month encodes this categorical seasonality.
+
+month and Temperature are absent from the Day1 top 10 but critical for Day3, confirming that longer-range forecasting relies on seasonal context rather than instantaneous pollutant concentrations.
+
+---
+
+### 2.4 SHAP Interactions (Day3)
+
+Top 5 interacting feature pairs and physical interpretation:
+
+| Feature 1 | Feature 2 | mean |interaction| | Interpretation |
+|---|---|---|---|
+| log_PM2_5 | AQI_roll_mean_7 | 0.5076 | Persistent pollution episodes amplify PM2.5 predictive power |
+| log_PM2_5 | wind_sin | 0.4023 | Wind direction modulates PM2.5 impact: onshore vs offshore flow |
+| log_PM2_5 | Temperature_roll_mean_7 | 0.3317 | Cold dry periods steepen the PM2.5-to-AQI relationship |
+| log_PM2_5 | Temperature | 0.3050 | Same mechanism at shorter timescale |
+| log_PM2_5 | AQI_roll_std_7 | 0.2677 | High-variability regimes amplify PM2.5 predictive power |
+
+log_PM2_5 interacts with nearly all other top features: its predictive value is strongly conditioned on meteorological and temporal context. AQI_roll_std_7 x month (0.2023) captures seasonally varying volatility regimes.
+
+---
+
+### 2.5 Hourly vs Daily SHAP: Are Different Features Important?
+
+Hourly LGBM Day1 top 10: AQI (7.18), log_PM2_5 (6.51), AQI_lag_1h (3.01), log_PM2_5_lag_24h (1.53), AQI_lag_6h (1.08), PM10 (1.05), log_PM2_5_lag_1h (0.91), hour_sin (0.84), PM10_lag_24h (0.75), SO2 (0.69)
+
+Daily LGBM Day1 top 10: log_PM2_5 (14.10), PM10 (1.34), O3 (1.29), AQI (0.81), SO2 (0.62), log_CO (0.56), PM10_lag_1 (0.55), AQI_roll_std_7 (0.43), Humidity (0.42), AQI_lag_1 (0.42)
+
+Key differences:
+
+- The hourly model places current AQI as top feature whereas daily places log_PM2_5 first. Hourly AQI is near-identical to the next-24h mean target (high 1h autocorrelation). The daily model works from aggregates where PM2.5 carries more discriminating power than the composite AQI index.
+- Short-horizon lags (AQI_lag_1h, AQI_lag_6h, log_PM2_5_lag_1h) appear prominently in hourly SHAP (ranks 3, 5, 7) but are absent from the daily feature set. These sub-daily lags carry significant information that the daily model cannot access.
+- hour_sin ranks 8th in hourly SHAP capturing the diurnal AQI cycle, with no daily equivalent.
+- For Hourly Day3, the top feature shifts to month (3.49), mirroring the daily Day3 finding. Seasonal encoding is universally more important at longer horizons regardless of input granularity.
+- The hourly Day3 model achieves R2 = -0.02, effectively failing at 3-day mean prediction from hourly inputs.
+
+---
+
+### 2.6 LIME vs SHAP Agreement
+
+LIME explanations for five representative Day1 instances:
+
+| Instance | Date | Actual | Pred | Error | LIME Top Feature | Direction |
+|---|---|---|---|---|---|---|
+| best_prediction | 2026-05-08 | 64.7 | 65.0 | 0.3 | log_PM2_5 <= -0.71 | negative |
+| worst_prediction | 2026-05-03 | 97.3 | 79.7 | 17.6 | -0.71 < log_PM2_5 <= -0.10 | negative |
+| summer_day | 2026-04-22 | 55.5 | 60.6 | 5.0 | log_PM2_5 <= -0.71 | negative |
+| winter_day | 2026-04-23 | 60.3 | 62.8 | 2.5 | log_PM2_5 <= -0.71 | negative |
+| high_aqi_day | 2026-05-12 | 85.4 | 74.4 | 11.0 | -0.71 < log_PM2_5 <= -0.10 | negative |
+
+LIME agrees with SHAP on the dominant driver: log_PM2_5 is the top local feature in all five instances. The direction is consistently negative (lower PM2.5 predicts lower AQI), which is physically correct. The worst prediction (error = 17.6) corresponds to PM2.5 in the mid-range bin, suggesting the model struggles when PM2.5 is near the transition between clean and polluted regimes.
+
+---
+
+### 2.7 Permutation Importance vs SHAP Agreement (Day3)
+
+| Feature | Perm rank | SHAP rank | Agreement |
+|---|---|---|---|
+| log_PM2_5 | 1 | 1 | Exact |
+| AQI_roll_std_7 | 2 | 2 | Exact |
+| AQI_lag_3 | 3 | 15 | Diverges |
+| AQI_roll_mean_7 | 4 | 5 | Close |
+| NO2 | 5 | 23 | Diverges |
+| PM10_lag_1 | 6 | 8 | Close |
+| Temperature | 7 | 3 | Close |
+| PM10 | 8 | 9 | Close |
+| Humidity_roll_mean_7 | 9 | 16 | Moderate |
+| AQI_lag_1 | 10 | 26 | Diverges |
+| Temperature_roll_mean_7 | 11 | 4 | Diverges |
+
+Top 2 features agree exactly. Most of the top 8 agree within a few ranks.
+
+Notable divergences: AQI_lag_3 ranks 3rd by permutation (R2 decrease = 0.050) but 15th by SHAP -- AQI_roll_mean_7 and AQI_roll_std_7 absorb much of the same autoregressive signal so marginal SHAP for AQI_lag_3 is diluted. NO2 ranks 5th by permutation (0.035) but 23rd by SHAP -- it carries non-redundant information spread across correlated pollutant features. Temperature_roll_mean_7 diverges the other way (SHAP rank 4, perm rank 11): high SHAP comes from its interaction with log_PM2_5, but permutation importance is lower because Temperature alone replicates much of its signal when either feature is shuffled.
+
+---
+
+### 2.8 Answer: What drives Day1's 0.795 R2?
+
+The Day1 model performance is driven primarily by the persistence of fine particulate matter: log_PM2_5 alone accounts for 56.5% of total SHAP weight (mean |SHAP| = 14.10 vs 24.96 total). The physical mechanism is that PM2.5 concentrations in Karachi are autocorrelated over 1-2 days due to slow dispersion under low-wind, stable conditions. Knowing today PM2.5 tightly constrains tomorrow AQI.
+
+The second tier -- PM10, O3, SO2, log_CO (combined ~17% of SHAP) -- adds complementary pollutant signal from distinct emission sources (traffic, industrial, photochemical). Autoregressive features AQI_lag_1 and AQI contribute only 4.9% combined, confirming the Day1 model is not an autoregressive persistence model: it is genuinely extracting multi-pollutant information.
+
+AQI_roll_std_7 (1.7% of SHAP) and Humidity (1.7%) provide secondary signals. The R2 of 0.795 is primarily a reflection of PM2.5 persistence, supplemented by co-occurring pollutant concentrations and minor meteorological modulation. Removing log_PM2_5 from the feature set would likely collapse Day1 performance substantially.
