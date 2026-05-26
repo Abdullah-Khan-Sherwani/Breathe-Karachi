@@ -7,3 +7,8 @@ lime_explanations/
 *.h5
 *.pkl
 *.keras
+*AGENT_PROMPT*
+*AGENT_PROMPT*.md
+ACCURACY_AGENT_PROMPT.md
+CHANGES.md
+scripts/backup_feature_store.json
