@@ -20,7 +20,7 @@ AIR_URL     = "https://air-quality-api.open-meteo.com/v1/air-quality"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 AIR_PARAMS     = "us_aqi,pm2_5,pm10,nitrogen_dioxide,sulphur_dioxide,carbon_monoxide,ozone"
-WEATHER_PARAMS = "temperature_2m,relative_humidity_2m,precipitation"
+WEATHER_PARAMS = "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m"
 
 COL_MAP = {
     "us_aqi": "AQI", "pm2_5": "PM2_5", "pm10": "PM10",
@@ -28,6 +28,7 @@ COL_MAP = {
     "carbon_monoxide": "CO", "ozone": "O3",
     "temperature_2m": "Temperature", "relative_humidity_2m": "Humidity",
     "precipitation": "Precipitation",
+    "wind_speed_10m": "wind_speed", "wind_direction_10m": "wind_direction",
 }
 
 
@@ -55,6 +56,44 @@ def to_daily_record(day: str, df: pd.DataFrame) -> dict:
 def upsert(record: dict) -> None:
     col = get_collection(COLLECTION_FEATURE_STORE)
     col.update_one({"date": record["date"]}, {"$set": record}, upsert=True)
+
+
+def fetch_range(start: str, end: str) -> pd.DataFrame | None:
+    """Fetch hourly air quality + weather for a date range in one API call."""
+    base = {"latitude": LAT, "longitude": LON, "timezone": TIMEZONE,
+            "start_date": start, "end_date": end}
+    try:
+        air  = requests.get(AIR_URL,     params={**base, "hourly": AIR_PARAMS},     timeout=30).json()["hourly"]
+        wthr = requests.get(ARCHIVE_URL, params={**base, "hourly": WEATHER_PARAMS}, timeout=30).json()["hourly"]
+    except Exception as e:
+        print(f"  fetch error {start}–{end}: {e}")
+        return None
+    df = pd.merge(pd.DataFrame(air), pd.DataFrame(wthr), on="time")
+    df["time"] = pd.to_datetime(df["time"])
+    return df
+
+
+def backfill_range(start: date, end: date) -> None:
+    """Fetch start→end in yearly chunks and upsert daily-averaged records."""
+    end = end or date.today() - timedelta(days=1)
+    # Split into yearly chunks to avoid huge API responses
+    current = start
+    while current <= end:
+        chunk_end = min(date(current.year, 12, 31), end)
+        print(f"  Fetching {current} to {chunk_end} ...", end=" ", flush=True)
+        df = fetch_range(current.isoformat(), chunk_end.isoformat())
+        if df is None or df.empty:
+            print("no data")
+            current = date(current.year + 1, 1, 1)
+            continue
+        df["date"] = df["time"].dt.date
+        inserted = 0
+        for day, grp in df.groupby("date"):
+            record = grp.drop(columns=["time", "date"]).mean().rename(COL_MAP)
+            upsert({"date": day.isoformat(), **record.to_dict()})
+            inserted += 1
+        print(f"{inserted} days upserted")
+        current = date(current.year + 1, 1, 1)
 
 
 def backfill(start: date = BACKFILL_START, end: date = None) -> None:
