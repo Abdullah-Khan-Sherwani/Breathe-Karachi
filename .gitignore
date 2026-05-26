@@ -12,3 +12,4 @@ lime_explanations/
 ACCURACY_AGENT_PROMPT.md
 CHANGES.md
 scripts/backup_feature_store.json
+data/
