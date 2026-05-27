@@ -63,7 +63,7 @@ def _fetch_hourly(start_date: str, end_date: str) -> pd.DataFrame | None:
     try:
         wthr_resp = requests.get(
             FORECAST_URL,
-            params={**base, "hourly": WEATHER_PARAMS, "past_days": 7},
+            params={**base, "hourly": WEATHER_PARAMS},
             timeout=20,
         )
         wthr_resp.raise_for_status()

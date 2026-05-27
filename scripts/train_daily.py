@@ -38,12 +38,13 @@ EXCLUDE_COLS = {"date", "processed_at", "_id",
                 "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
                 # PM2.5 leads — excluded (dominant AQI driver, inflates metrics):
                 "PM2_5_t1", "PM2_5_t2", "PM2_5_t3", "PM2_5_t4",
-                # removed from pipeline but may still exist in old MongoDB docs:
-                "visibility", "visibility_t1", "visibility_t2", "visibility_t3",
+                # Sparse variables: null in ERA5 archive, forecast-only — excluded
+                "visibility", "visibility_t1", "visibility_t2", "visibility_t3", "visibility_t4",
                 "visibility_lag_1", "visibility_roll_mean_7",
-                "wind_speed_80m", "wind_speed_80m_t1", "wind_speed_80m_t2", "wind_speed_80m_t3",
-                "wind_speed_80m_lag_1",
-                "cape", "cape_t1", "cape_t2", "cape_t3", "cape_lag_1",
+                "wind_speed_80m", "wind_speed_80m_t1", "wind_speed_80m_t2", "wind_speed_80m_t3", "wind_speed_80m_t4",
+                "wind_speed_80m_lag_1", "wind_speed_80m_roll_mean_7",
+                "cape", "cape_t1", "cape_t2", "cape_t3", "cape_t4",
+                "cape_lag_1", "cape_roll_mean_7",
                 } | set(TARGET_COLS)
 
 SEQ_LEN = 7
@@ -330,3 +331,9 @@ if __name__ == "__main__":
 
     ens_metrics = compute_ensemble(lgbm_preds, lstm_preds, y_test_lstm)
     print_comparison(lgbm_metrics, lstm_metrics, ens_metrics)
+
+    # ── Full retrain on all labeled data (mirrors production train.py) ────────
+    print("\n" + "=" * 60)
+    print(f"Full retrain on {len(df)} rows (all labeled data through {df['date'].max().date()})")
+    print("Holdout metrics above are the honest evaluation; full models are what production uses.")
+    print("=" * 60)

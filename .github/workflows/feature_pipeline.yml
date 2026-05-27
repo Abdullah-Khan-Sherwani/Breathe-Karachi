@@ -28,5 +28,8 @@ jobs:
       - name: Fetch new daily data
         run: python src/update_daily_data.py
 
+      - name: Fetch new hourly data
+        run: python src/update_hourly_data.py
+
       - name: Run feature engineering
         run: python src/preprocess_daily_data.py

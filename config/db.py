@@ -85,6 +85,26 @@ def save_model(model, scaler, model_type: str, metrics: dict, feature_cols: list
     return result.inserted_id
 
 
+def purge_old_models(model_type: str, keep_days: int = 4) -> int:
+    """
+    Delete inactive automated model_registry docs older than keep_days.
+    Only touches docs where automated=True (saved by GitHub Actions).
+    Manually saved models are never deleted.
+    Returns count deleted.
+    """
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=keep_days)
+    result = get_collection(COLLECTION_MODEL_REGISTRY).delete_many({
+        "model_type": model_type,
+        "status":     "inactive",
+        "automated":  True,
+        "trained_at": {"$lt": cutoff},
+    })
+    if result.deleted_count:
+        print(f"  purged {result.deleted_count} stale {model_type} model(s) from registry")
+    return result.deleted_count
+
+
 def load_model(model_type: str = "lstm"):
     """
     Load the latest active model of the given type from model_registry.

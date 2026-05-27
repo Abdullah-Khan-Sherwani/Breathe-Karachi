@@ -21,6 +21,19 @@ LGBM_PARAMS = dict(
 )
 
 
+def train_lgbm_full(X: np.ndarray, y: np.ndarray):
+    """Retrain on the complete labeled dataset (no holdout). Returns (model, scaler)."""
+    scaler = StandardScaler()
+    X_sc = scaler.fit_transform(X)
+    y = np.asarray(y)
+    models = []
+    for h in range(y.shape[1]):
+        m = LGBMRegressor(**LGBM_PARAMS)
+        m.fit(X_sc, y[:, h])
+        models.append(m)
+    return PerHorizonWrapper(models), scaler
+
+
 def train_lgbm(X_train, y_train, X_test, y_test):
     """
     Train one LGBMRegressor per horizon wrapped in PerHorizonWrapper.
