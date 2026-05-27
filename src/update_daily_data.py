@@ -8,9 +8,11 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 import pandas as pd
-from datetime import date, timedelta
+from datetime import date, datetime, timezone, timedelta
 from config.db import get_collection, COLLECTION_FEATURE_STORE
 from src.fetch_data import fetch_day, to_daily_record, upsert
+
+PKT = timezone(timedelta(hours=5))
 
 
 def latest_stored_date() -> date:
@@ -25,7 +27,7 @@ def latest_stored_date() -> date:
 
 def run() -> None:
     last  = latest_stored_date()
-    today = date.today()
+    today = datetime.now(PKT).date()
     missing = pd.date_range(last + timedelta(days=1), today - timedelta(days=1))
 
     if missing.empty:
