@@ -25,7 +25,7 @@ from lightgbm import LGBMRegressor
 from config.db import get_collection, COLLECTION_FEATURE_STORE
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3"]
+TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3", "AQI_t+4"]
 
 # Tier-2/Tier-3 features tested and confirmed to hurt both LGBM and LSTM on holdout
 EXCLUDE_COLS = {"date", "processed_at", "_id",
@@ -36,6 +36,14 @@ EXCLUDE_COLS = {"date", "processed_at", "_id",
                 "apparent_temp_lag_1", "apparent_temp_roll_mean_7",
                 "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3",
                 "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
+                # PM2.5 leads — excluded (dominant AQI driver, inflates metrics):
+                "PM2_5_t1", "PM2_5_t2", "PM2_5_t3", "PM2_5_t4",
+                # removed from pipeline but may still exist in old MongoDB docs:
+                "visibility", "visibility_t1", "visibility_t2", "visibility_t3",
+                "visibility_lag_1", "visibility_roll_mean_7",
+                "wind_speed_80m", "wind_speed_80m_t1", "wind_speed_80m_t2", "wind_speed_80m_t3",
+                "wind_speed_80m_lag_1",
+                "cape", "cape_t1", "cape_t2", "cape_t3", "cape_lag_1",
                 } | set(TARGET_COLS)
 
 SEQ_LEN = 7
@@ -87,12 +95,13 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     }
 
 
-def print_per_horizon(label: str, m1: dict, m2: dict, m3: dict) -> None:
+def print_per_horizon(label: str, *metrics) -> None:
     print(f"\n{label}")
-    print(f"  {'Horizon':<10}  {'R2':>7}  {'MAE':>7}  {'RMSE':>7}")
-    print("  " + "-" * 36)
-    for name, m in [("day1 (t+1)", m1), ("day2 (t+2)", m2), ("day3 (t+3)", m3)]:
-        print(f"  {name:<10}  {m['R2']:>7.3f}  {m['MAE']:>7.2f}  {m['RMSE']:>7.2f}")
+    print(f"  {'Horizon':<12}  {'R2':>7}  {'MAE':>7}  {'RMSE':>7}")
+    print("  " + "-" * 38)
+    names = ["day1 (t+1)", "day2 (t+2)", "day3 (t+3)", "day4 (t+4)"]
+    for name, m in zip(names, metrics):
+        print(f"  {name:<12}  {m['R2']:>7.3f}  {m['MAE']:>7.2f}  {m['RMSE']:>7.2f}")
 
 
 # ── LGBM: 3 independent models ────────────────────────────────────────────────
@@ -116,10 +125,8 @@ def train_lgbm(X_train, X_test, y_train, y_test, feat_names):
         m_metrics = compute_metrics(y_test[:, h], pred)
         print(f"    R2={m_metrics['R2']:.3f}  MAE={m_metrics['MAE']:.2f}  RMSE={m_metrics['RMSE']:.2f}")
 
-    m1 = compute_metrics(y_test[:, 0], preds[0])
-    m2 = compute_metrics(y_test[:, 1], preds[1])
-    m3 = compute_metrics(y_test[:, 2], preds[2])
-    print_per_horizon("LGBM per-horizon results (30-day holdout)", m1, m2, m3)
+    metrics = [compute_metrics(y_test[:, h], preds[h]) for h in range(len(TARGET_COLS))]
+    print_per_horizon("LGBM per-horizon results (30-day holdout)", *metrics)
 
     # Top-10 feature importances from day3 model
     imp = pd.Series(models[2].feature_importances_, index=feat_names).sort_values(ascending=False)
@@ -127,8 +134,8 @@ def train_lgbm(X_train, X_test, y_train, y_test, feat_names):
     for fname, score in imp.head(10).items():
         print(f"    {fname:<32}  {score:>6}")
 
-    lgbm_preds = np.column_stack(preds)   # shape (n_test, 3)
-    return models, scaler, (m1, m2, m3), lgbm_preds
+    lgbm_preds = np.column_stack(preds)
+    return models, scaler, tuple(metrics), lgbm_preds
 
 
 # ── LSTM: multi-output ────────────────────────────────────────────────────────
@@ -143,6 +150,9 @@ def _build_sequences(X: np.ndarray, y: np.ndarray, seq_len: int):
 
 def train_lstm(X_train, X_test, y_train, y_test):
     import tensorflow as tf
+
+    # Clear any stale Keras session / traced-function cache from previous runs
+    tf.keras.backend.clear_session()
 
     os.environ["PYTHONHASHSEED"] = "0"
     random.seed(42)
@@ -196,7 +206,7 @@ def train_lstm(X_train, X_test, y_train, y_test):
         tf.keras.layers.Dropout(0.4),
         tf.keras.layers.LSTM(32, kernel_regularizer=tf.keras.regularizers.L2(1e-3)),
         tf.keras.layers.Dropout(0.4),
-        tf.keras.layers.Dense(3),
+        tf.keras.layers.Dense(4),
     ])
     model.compile(
         optimizer=tf.keras.optimizers.Adam(1e-3),
@@ -236,12 +246,10 @@ def train_lstm(X_train, X_test, y_train, y_test):
     preds  = y_sc.inverse_transform(preds_sc)
     y_true = y_sc.inverse_transform(y_true_sc)
 
-    m1 = compute_metrics(y_true[:, 0], preds[:, 0])
-    m2 = compute_metrics(y_true[:, 1], preds[:, 1])
-    m3 = compute_metrics(y_true[:, 2], preds[:, 2])
-    print_per_horizon("LSTM multi-output results (30-day holdout)", m1, m2, m3)
+    lstm_metrics = tuple(compute_metrics(y_true[:, h], preds[:, h]) for h in range(len(TARGET_COLS)))
+    print_per_horizon("LSTM multi-output results (30-day holdout)", *lstm_metrics)
 
-    return model, (x_sc, y_sc), (m1, m2, m3), preds, y_true
+    return model, (x_sc, y_sc), lstm_metrics, preds, y_true
 
 
 # ── Ensemble: per-horizon weighted blend ──────────────────────────────────────
@@ -250,7 +258,8 @@ def train_lstm(X_train, X_test, y_train, y_test):
 ENSEMBLE_WEIGHTS = [
     (0.6, 0.4),   # day1: lgbm_w, lstm_w
     (0.15, 0.85), # day2
-    (0.0, 1.0),   # day3: LGBM too weak here (R2=0.178), pure LSTM is better
+    (0.0, 1.0),   # day3: pure LSTM
+    (0.0, 1.0),   # day4: pure LSTM
 ]
 
 
@@ -265,33 +274,34 @@ def compute_ensemble(lgbm_preds, lstm_preds, y_test):
 
 # ── Comparison table ──────────────────────────────────────────────────────────
 def print_comparison(lgbm_m, lstm_m, ens_m):
-    m1l, m2l, m3l = lgbm_m
-    m1s, m2s, m3s = lstm_m
-    m1e, m2e, m3e = ens_m
+    h_labels = ["d1", "d2", "d3", "d4"]
 
-    print("\n" + "=" * 64)
+    print("\n" + "=" * 72)
     print("COMPARISON (30-day holdout)")
-    print(f"  {'Model':<28}  {'R2_d1':>7}  {'R2_d2':>7}  {'R2_d3':>7}")
-    print("  " + "-" * 52)
-    print(f"  {'Daily LGBM baseline':<28}  {0.773:>7.3f}  {0.284:>7.3f}  {0.120:>7.3f}")
-    print(f"  {'LGBM per-horizon (this)':<28}  {m1l['R2']:>7.3f}  {m2l['R2']:>7.3f}  {m3l['R2']:>7.3f}")
-    print(f"  {'LSTM multi-output (this)':<28}  {m1s['R2']:>7.3f}  {m2s['R2']:>7.3f}  {m3s['R2']:>7.3f}")
-    print(f"  {'Ensemble (weighted)':<28}  {m1e['R2']:>7.3f}  {m2e['R2']:>7.3f}  {m3e['R2']:>7.3f}")
-    print("=" * 64)
+    header = f"  {'Model':<28}" + "".join(f"  {'R2_'+h:>7}" for h in h_labels)
+    print(header)
+    print("  " + "-" * 60)
+    for name, row in [
+        ("LGBM per-horizon (this)", lgbm_m),
+        ("LSTM multi-output (this)", lstm_m),
+        ("Ensemble (weighted)",      ens_m),
+    ]:
+        vals = "".join(f"  {m['R2']:>7.3f}" for m in row)
+        print(f"  {name:<28}{vals}")
+    print("=" * 72)
 
-    print("\nPer-horizon MAE:")
-    print(f"  {'Model':<28}  {'MAE_d1':>7}  {'MAE_d2':>7}  {'MAE_d3':>7}")
-    print("  " + "-" * 52)
-    print(f"  {'LGBM per-horizon (this)':<28}  {m1l['MAE']:>7.2f}  {m2l['MAE']:>7.2f}  {m3l['MAE']:>7.2f}")
-    print(f"  {'LSTM multi-output (this)':<28}  {m1s['MAE']:>7.2f}  {m2s['MAE']:>7.2f}  {m3s['MAE']:>7.2f}")
-    print(f"  {'Ensemble (weighted)':<28}  {m1e['MAE']:>7.2f}  {m2e['MAE']:>7.2f}  {m3e['MAE']:>7.2f}")
-
-    print("\nPer-horizon RMSE:")
-    print(f"  {'Model':<28}  {'RMSE_d1':>7}  {'RMSE_d2':>7}  {'RMSE_d3':>7}")
-    print("  " + "-" * 52)
-    print(f"  {'LGBM per-horizon (this)':<28}  {m1l['RMSE']:>7.2f}  {m2l['RMSE']:>7.2f}  {m3l['RMSE']:>7.2f}")
-    print(f"  {'LSTM multi-output (this)':<28}  {m1s['RMSE']:>7.2f}  {m2s['RMSE']:>7.2f}  {m3s['RMSE']:>7.2f}")
-    print(f"  {'Ensemble (weighted)':<28}  {m1e['RMSE']:>7.2f}  {m2e['RMSE']:>7.2f}  {m3e['RMSE']:>7.2f}")
+    for metric in ("MAE", "RMSE"):
+        print(f"\nPer-horizon {metric}:")
+        h2 = f"  {'Model':<28}" + "".join(f"  {metric+'_'+h:>8}" for h in h_labels)
+        print(h2)
+        print("  " + "-" * 64)
+        for name, row in [
+            ("LGBM per-horizon (this)", lgbm_m),
+            ("LSTM multi-output (this)", lstm_m),
+            ("Ensemble (weighted)",      ens_m),
+        ]:
+            vals = "".join(f"  {m[metric]:>8.2f}" for m in row)
+            print(f"  {name:<28}{vals}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
