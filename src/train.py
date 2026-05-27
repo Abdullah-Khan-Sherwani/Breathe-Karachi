@@ -27,11 +27,11 @@ EXCLUDE_COLS = {
     # Tier-2: confirmed to hurt holdout performance
     "AQI_trend_7d", "AQI_x_wind", "NO2_lag_3", "Humidity_lag_3",
     # Tier-3: weather variables not available at backfill time for most rows
-    "surface_pressure", "surface_pressure_t1", "surface_pressure_t2", "surface_pressure_t3",
+    "surface_pressure", "surface_pressure_t1", "surface_pressure_t2", "surface_pressure_t3", "surface_pressure_t4",
     "surface_pressure_lag_1", "surface_pressure_roll_mean_7",
-    "apparent_temp", "apparent_temp_t1", "apparent_temp_t2", "apparent_temp_t3",
+    "apparent_temp", "apparent_temp_t1", "apparent_temp_t2", "apparent_temp_t3", "apparent_temp_t4",
     "apparent_temp_lag_1", "apparent_temp_roll_mean_7",
-    "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3",
+    "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3", "wind_gusts_t4",
     "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
     # Tier-4: columns removed from pipeline but may exist in old MongoDB docs
     "visibility", "visibility_t1", "visibility_t2", "visibility_t3",
