@@ -12,6 +12,9 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
+import os
+import random
+
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
@@ -128,6 +131,11 @@ def _build_sequences(X: np.ndarray, y: np.ndarray, seq_len: int):
 
 def train_lstm(X_train, X_test, y_train, y_test):
     import tensorflow as tf
+
+    os.environ["PYTHONHASHSEED"] = "0"
+    random.seed(42)
+    np.random.seed(42)
+    tf.random.set_seed(42)
 
     n_features = X_train.shape[1]
 
