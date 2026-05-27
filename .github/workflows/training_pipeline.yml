@@ -43,6 +43,3 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update LIME artefacts [skip ci]"
           git push
 
-      - name: Trigger Render deploy
-        if: ${{ secrets.RENDER_DEPLOY_HOOK != '' }}
-        run: curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"
