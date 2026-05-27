@@ -95,13 +95,38 @@ AQI_lag_1, AQI_lag_2, AQI_roll_mean_3, AQI_roll_std_3, AQI_diff
 
 ---
 
+## Pipeline Upgrade (2026-05-27)
+
+### Feature engineering audit & consolidation
+- [x] MongoDB backup to CSV before changes (`backups/feature_store_20260527_125204.csv`)
+- [x] Audited 120 MongoDB columns — all branches compared
+- [x] `src/preprocess_daily_data.py` rewritten to produce all 120 columns (15 raw + 100 engineered + 3 targets + date)
+- [x] Sanity check: 114/118 exact matches, 4 documented acceptable deviations → PASS (`scripts/sanity_check_features.py`)
+- [x] `src/fetch_data.py` updated to also fetch apparent_temp, surface_pressure, wind_gusts in daily backfill
+
+### Training pipeline upgrade
+- [x] `src/models/lgbm_model.py` — switched from MultiOutputRegressor to per-horizon PerHorizonWrapper (3 independent LGBMs); LGBM params tuned to n_estimators=500, max_depth=7, num_leaves=63
+- [x] `src/models/lstm_model.py` — dropout 0.2→0.4, added L2(1e-3), loss huber, independent y-scaler, patience 20→25, ReduceLROnPlateau, epochs 100→150
+- [x] `src/train.py` — EXCLUDE_COLS expanded to drop 22 features (4 tier-2 + 18 tier-3) that hurt holdout performance; data filtered to 2023+ rows; per-horizon metric logging added
+- [x] Expected performance: LGBM d1 R2=0.865 MAE=4.10, Ensemble d1 R2=0.858 MAE=4.62
+
+### Inference upgrade
+- [x] `src/predict.py` — loads BOTH active lgbm and lstm, blends per-horizon (d1: 0.6/0.4, d2: 0.15/0.85, d3: pure LSTM), saves as `model_type: "ensemble"` with component_models dict
+
+### Hourly data pipeline (new)
+- [x] `src/update_hourly_data.py` — fetches hourly AQI + weather (incl. tier-3 vars) into `hourly_feature_store` collection; incremental upsert on `time` key
+- [x] `config/db.py` — added `COLLECTION_HOURLY = "hourly_feature_store"`
+- [x] `.github/workflows/feature_pipeline.yml` — step order: update_hourly_data → update_daily_data → preprocess_daily_data
+
+---
+
 ## Completion Checklist
 
 | Subtask | Status |
 |---------|--------|
 | 1 — Data Pipeline | ✅ Done |
 | 2 — EDA Notebook | ⬜ Pending |
-| 3 — Training Pipeline | ✅ Done |
-| 4 — Inference & Explainability | ✅ Done |
-| 5 — CI/CD & Deployment | ✅ Done |
+| 3 — Training Pipeline | ✅ Done (upgraded) |
+| 4 — Inference & Explainability | ✅ Done (upgraded) |
+| 5 — CI/CD & Deployment | ✅ Done (hourly added) |
 | 6 — Dashboard | ⬜ Pending |

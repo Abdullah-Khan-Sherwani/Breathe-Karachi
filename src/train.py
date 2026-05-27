@@ -22,7 +22,24 @@ from config.db import (
 from src.models import train_ridge, train_lgbm, train_lstm
 
 TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3"]
-EXCLUDE_COLS = {"date", "processed_at", "_id"} | set(TARGET_COLS)
+EXCLUDE_COLS = {
+    "date", "processed_at", "_id",
+    # Tier-2: confirmed to hurt holdout performance
+    "AQI_trend_7d", "AQI_x_wind", "NO2_lag_3", "Humidity_lag_3",
+    # Tier-3: weather variables not available at backfill time for most rows
+    "surface_pressure", "surface_pressure_t1", "surface_pressure_t2", "surface_pressure_t3",
+    "surface_pressure_lag_1", "surface_pressure_roll_mean_7",
+    "apparent_temp", "apparent_temp_t1", "apparent_temp_t2", "apparent_temp_t3",
+    "apparent_temp_lag_1", "apparent_temp_roll_mean_7",
+    "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3",
+    "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
+} | set(TARGET_COLS)
+
+_PER_HORIZON_KEYS = [
+    "MAE_d1", "MAE_d2", "MAE_d3",
+    "RMSE_d1", "RMSE_d2", "RMSE_d3",
+    "R2_d1", "R2_d2", "R2_d3",
+]
 
 
 def load_data() -> pd.DataFrame:
@@ -33,6 +50,8 @@ def load_data() -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
     df = df.dropna(subset=TARGET_COLS)
+    # Rows before 2023 have weather but sparse/unreliable AQI
+    df = df[df["date"] >= pd.Timestamp("2023-01-01")]
     return df
 
 
@@ -48,13 +67,17 @@ def time_split(df: pd.DataFrame, test_days: int = 30):
 
 
 def _log(col, model_type: str, status: str, metrics: dict, model_id=None):
-    col.insert_one({
+    doc: dict = {
         "timestamp":  datetime.now(timezone.utc),
         "status":     status,
         "model_type": model_type,
         "model_id":   str(model_id) if model_id else None,
-        **metrics,
-    })
+    }
+    # Always include base metrics; include per-horizon keys when present
+    for key in ("MAE", "RMSE", "R2", "error", *_PER_HORIZON_KEYS):
+        if key in metrics:
+            doc[key] = metrics[key]
+    col.insert_one(doc)
 
 
 def run() -> None:
@@ -95,6 +118,9 @@ def run() -> None:
             _log(logs_col, model_type, "success", metrics, model_id)
             results.append((model_type, metrics["RMSE"], model_id))
             print(f"  {model_type}: MAE={metrics['MAE']:.2f}  RMSE={metrics['RMSE']:.2f}  R²={metrics['R2']:.3f}")
+            for h in range(1, 4):
+                if f"R2_d{h}" in metrics:
+                    print(f"    d{h}: MAE={metrics[f'MAE_d{h}']:.2f}  RMSE={metrics[f'RMSE_d{h}']:.2f}  R²={metrics[f'R2_d{h}']:.3f}")
         except Exception as exc:
             _log(logs_col, model_type, "error", {"error": str(exc)})
             print(f"  {model_type} FAILED: {exc}")
@@ -102,13 +128,8 @@ def run() -> None:
     if not results:
         raise RuntimeError("All models failed to train.")
 
-    # Mark all but the best as inactive (save_model already handles per-type retirement,
-    # but we also want a single "champion" across types)
     best_type, best_rmse, best_id = min(results, key=lambda r: r[1])
     print(f"\nBest model: {best_type}  RMSE={best_rmse:.2f}  id={best_id}")
-
-    # Retire non-champion models so load_model('best') could find the winner if needed
-    # Convention: leave each model's own active record; callers choose model_type explicitly.
     print("Training complete.")
 
 

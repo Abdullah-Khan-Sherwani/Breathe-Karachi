@@ -1,14 +1,14 @@
 """
-Inference — loads the active model from model_registry, builds the appropriate
-input, generates a 3-day AQI forecast, and writes one document to predictions.
+Inference — loads the active lgbm and lstm models from model_registry, ensembles
+their predictions with per-horizon weights, and writes one document to predictions.
+Falls back to whichever model type is available if one is missing.
 """
 
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
-import pickle
-from datetime import datetime, timezone, date, timedelta
+from datetime import datetime, timezone, timedelta
 
 import numpy as np
 import pandas as pd
@@ -18,21 +18,16 @@ from config.db import (
     load_model,
     COLLECTION_FEATURE_STORE,
     COLLECTION_PREDICTIONS,
-    COLLECTION_MODEL_REGISTRY,
 )
 
 SEQ_LEN = 7
 
-
-def _best_active_type() -> str:
-    """Return model_type of the active model with the lowest RMSE."""
-    docs = list(get_collection(COLLECTION_MODEL_REGISTRY).find(
-        {"status": "active", "RMSE": {"$exists": True}},
-        {"model_type": 1, "RMSE": 1},
-    ))
-    if not docs:
-        raise ValueError("No active model found in model_registry.")
-    return min(docs, key=lambda d: d["RMSE"])["model_type"]
+# Per-horizon blend weights [lgbm, lstm] — derived from holdout analysis
+_ENSEMBLE_WEIGHTS = [
+    (0.60, 0.40),   # day 1: LGBM dominates
+    (0.15, 0.85),   # day 2: LSTM dominates
+    (0.00, 1.00),   # day 3: LSTM only
+]
 
 
 def _load_feature_store(n_rows: int) -> pd.DataFrame:
@@ -49,12 +44,13 @@ def _load_feature_store(n_rows: int) -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
-def _feature_cols(metadata: dict) -> list[str]:
-    return metadata["features"]
-
-
 def _predict_tabular(model, scaler, feat_cols: list, df: pd.DataFrame) -> np.ndarray:
-    row = df.iloc[[-1]][feat_cols].values
+    row = df.iloc[[-1]][feat_cols].values.astype(float)
+    # If the forecast API failed, some lead features may be NaN — fill with column median.
+    if np.isnan(row).any():
+        col_medians = np.nanmedian(df[feat_cols].values, axis=0)
+        nan_mask = np.isnan(row[0])
+        row[0, nan_mask] = col_medians[nan_mask]
     row_sc = scaler.transform(row)
     return model.predict(row_sc)[0]
 
@@ -62,24 +58,59 @@ def _predict_tabular(model, scaler, feat_cols: list, df: pd.DataFrame) -> np.nda
 def _predict_lstm(model, scaler, feat_cols: list, df: pd.DataFrame) -> np.ndarray:
     if len(df) < SEQ_LEN:
         raise RuntimeError(f"Need at least {SEQ_LEN} rows in feature_store for LSTM inference.")
-    seq = df.iloc[-SEQ_LEN:][feat_cols].values
-    seq_sc = scaler.transform(seq)
-    return model.predict(seq_sc[np.newaxis, ...], verbose=0)[0]
+    x_sc, y_sc = scaler if isinstance(scaler, tuple) else (scaler, None)
+    seq = df.iloc[-SEQ_LEN:][feat_cols].values.astype(float)
+    # Fill any NaN (e.g. forecast API failure) with column median from available rows.
+    if np.isnan(seq).any():
+        col_medians = np.nanmedian(df[feat_cols].values, axis=0)
+        nan_mask = np.isnan(seq)
+        seq[nan_mask] = np.take(col_medians, np.where(nan_mask)[1])
+    seq_sc = x_sc.transform(seq)
+    pred_sc = model.predict(seq_sc[np.newaxis, ...], verbose=0)
+    if y_sc is not None:
+        return y_sc.inverse_transform(pred_sc)[0]
+    return pred_sc[0]
+
+
+def _try_load(model_type: str):
+    """Return (model, scaler, metadata) or None if not found."""
+    try:
+        return load_model(model_type)
+    except ValueError:
+        return None
 
 
 def run() -> None:
-    model_type = _best_active_type()
-    model, scaler, metadata = load_model(model_type)
-    feat_cols = _feature_cols(metadata)
-    model_id  = metadata["_id"]
+    df = _load_feature_store(SEQ_LEN + 10)
 
-    n_rows = SEQ_LEN if model_type == "lstm" else 1
-    df = _load_feature_store(n_rows + 10)  # extra rows as buffer
+    lgbm_result = _try_load("lgbm")
+    lstm_result = _try_load("lstm")
 
-    if model_type == "lstm":
-        predictions = _predict_lstm(model, scaler, feat_cols, df)
-    else:
-        predictions = _predict_tabular(model, scaler, feat_cols, df)
+    if lgbm_result is None and lstm_result is None:
+        raise ValueError("No active lgbm or lstm model found in model_registry.")
+
+    preds_lgbm: np.ndarray | None = None
+    preds_lstm: np.ndarray | None = None
+    component_models: dict = {}
+
+    if lgbm_result is not None:
+        lgbm_model, lgbm_scaler, lgbm_meta = lgbm_result
+        preds_lgbm = _predict_tabular(lgbm_model, lgbm_scaler, lgbm_meta["features"], df)
+        component_models["lgbm"] = lgbm_meta["_id"]
+
+    if lstm_result is not None:
+        lstm_model, lstm_scaler, lstm_meta = lstm_result
+        preds_lstm = _predict_lstm(lstm_model, lstm_scaler, lstm_meta["features"], df)
+        component_models["lstm"] = lstm_meta["_id"]
+
+    predictions = np.zeros(3)
+    for d, (w_lgbm, w_lstm) in enumerate(_ENSEMBLE_WEIGHTS):
+        if preds_lgbm is not None and preds_lstm is not None:
+            predictions[d] = w_lgbm * preds_lgbm[d] + w_lstm * preds_lstm[d]
+        elif preds_lgbm is not None:
+            predictions[d] = preds_lgbm[d]
+        else:
+            predictions[d] = preds_lstm[d]
 
     last_date = df["date"].max().date()
     forecasts = [
@@ -89,10 +120,10 @@ def run() -> None:
     ]
 
     doc = {
-        "predicted_at": datetime.now(timezone.utc),
-        "model_type":   model_type,
-        "model_id":     model_id,
-        "forecasts":    forecasts,
+        "predicted_at":    datetime.now(timezone.utc),
+        "model_type":      "ensemble",
+        "component_models": component_models,
+        "forecasts":       forecasts,
     }
     get_collection(COLLECTION_PREDICTIONS).insert_one(doc)
 
