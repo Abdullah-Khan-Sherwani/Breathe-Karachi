@@ -26,7 +26,17 @@ from config.db import get_collection, COLLECTION_FEATURE_STORE
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3"]
-EXCLUDE_COLS = {"date", "processed_at", "_id"} | set(TARGET_COLS)
+EXCLUDE_COLS = {"date", "processed_at", "_id",
+                # Tier-2: redundant with existing features — hurt LSTM by ~0.13 R²
+                "AQI_trend_7d", "AQI_x_wind", "NO2_lag_3", "Humidity_lag_3",
+                # Tier-3: correlated with existing weather vars — hurt LSTM by ~0.20 R²
+                "surface_pressure", "surface_pressure_t1", "surface_pressure_t2", "surface_pressure_t3",
+                "surface_pressure_lag_1", "surface_pressure_roll_mean_7",
+                "apparent_temp", "apparent_temp_t1", "apparent_temp_t2", "apparent_temp_t3",
+                "apparent_temp_lag_1", "apparent_temp_roll_mean_7",
+                "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3",
+                "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
+                } | set(TARGET_COLS)
 
 SEQ_LEN = 7
 
@@ -196,10 +206,10 @@ def train_lstm(X_train, X_test, y_train, y_test):
 
     callbacks = [
         tf.keras.callbacks.EarlyStopping(
-            monitor="val_loss", patience=15, restore_best_weights=True
+            monitor="val_loss", patience=25, restore_best_weights=True
         ),
         tf.keras.callbacks.ReduceLROnPlateau(
-            monitor="val_loss", factor=0.5, patience=7, min_lr=1e-5, verbose=1
+            monitor="val_loss", factor=0.5, patience=10, min_lr=1e-5, verbose=1
         ),
     ]
 
@@ -207,7 +217,7 @@ def train_lstm(X_train, X_test, y_train, y_test):
     model.fit(
         X_s_tr, y_s_tr,
         validation_split=0.1,
-        epochs=100,
+        epochs=150,
         batch_size=16,
         callbacks=callbacks,
         verbose=1,
@@ -238,8 +248,8 @@ def train_lstm(X_train, X_test, y_train, y_test):
 # day1: LGBM stronger → lean LGBM; day2/day3: LSTM stronger → lean LSTM.
 ENSEMBLE_WEIGHTS = [
     (0.6, 0.4),   # day1: lgbm_w, lstm_w
-    (0.2, 0.8),   # day2
-    (0.1, 0.9),   # day3
+    (0.15, 0.85), # day2
+    (0.0, 1.0),   # day3: LGBM too weak here (R2=0.178), pure LSTM is better
 ]
 
 

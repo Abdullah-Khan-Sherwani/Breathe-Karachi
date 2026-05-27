@@ -63,6 +63,44 @@ def add_lag_rolling(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_tier2_features(df: pd.DataFrame) -> pd.DataFrame:
+    # 7-day linear slope of AQI (uses only past values — shift(1) before rolling)
+    aqi_lagged = df["AQI"].shift(1)
+    df["AQI_trend_7d"] = aqi_lagged.rolling(7).apply(
+        lambda arr: np.polyfit(np.arange(7), arr, 1)[0], raw=True
+    )
+
+    # Interaction: current-day AQI × wind_speed (both already used as raw features)
+    if "wind_speed" in df.columns:
+        df["AQI_x_wind"] = df["AQI"] * df["wind_speed"]
+
+    # Lag-3 features motivated by cross-correlation peaks (NO2, Humidity peak at lag 3)
+    df["NO2_lag_3"]      = df["NO2"].shift(3)
+    df["Humidity_lag_3"] = df["Humidity"].shift(3)
+
+    return df
+
+
+def add_tier3_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Feature engineering for new Open-Meteo variables (surface_pressure, apparent_temp, wind_gusts)."""
+    tier3_vars = {
+        "surface_pressure": "sp",
+        "apparent_temp":    "at",
+        "wind_gusts":       "wg",
+    }
+    for col, _ in tier3_vars.items():
+        if col not in df.columns:
+            continue
+        # Forecast windows (actual future values used at training; forecast API at inference)
+        df[f"{col}_t1"] = df[col].shift(-1)
+        df[f"{col}_t2"] = df[col].shift(-2)
+        df[f"{col}_t3"] = df[col].shift(-3)
+        # Lagged and rolling context
+        df[f"{col}_lag_1"]      = df[col].shift(1)
+        df[f"{col}_roll_mean_7"] = df[col].shift(1).rolling(7).mean()
+    return df
+
+
 def add_targets(df: pd.DataFrame) -> pd.DataFrame:
     df["AQI_t+1"] = df["AQI"].shift(-1)
     df["AQI_t+2"] = df["AQI"].shift(-2)
@@ -77,6 +115,8 @@ def run() -> None:
     df = add_log_transforms(df)
     df = add_temporal(df)
     df = add_lag_rolling(df)
+    df = add_tier2_features(df)
+    df = add_tier3_features(df)
     df = add_targets(df)
     df = df.dropna().reset_index(drop=True)
 
