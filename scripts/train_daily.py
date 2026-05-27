@@ -30,11 +30,11 @@ TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3", "AQI_t+4"]
 # Tier-2/Tier-3 features tested and confirmed to hurt both LGBM and LSTM on holdout
 EXCLUDE_COLS = {"date", "processed_at", "_id",
                 "AQI_trend_7d", "AQI_x_wind", "NO2_lag_3", "Humidity_lag_3",
-                "surface_pressure", "surface_pressure_t1", "surface_pressure_t2", "surface_pressure_t3",
+                "surface_pressure", "surface_pressure_t1", "surface_pressure_t2", "surface_pressure_t3", "surface_pressure_t4",
                 "surface_pressure_lag_1", "surface_pressure_roll_mean_7",
-                "apparent_temp", "apparent_temp_t1", "apparent_temp_t2", "apparent_temp_t3",
+                "apparent_temp", "apparent_temp_t1", "apparent_temp_t2", "apparent_temp_t3", "apparent_temp_t4",
                 "apparent_temp_lag_1", "apparent_temp_roll_mean_7",
-                "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3",
+                "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3", "wind_gusts_t4",
                 "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
                 # PM2.5 leads — excluded (dominant AQI driver, inflates metrics):
                 "PM2_5_t1", "PM2_5_t2", "PM2_5_t3", "PM2_5_t4",
