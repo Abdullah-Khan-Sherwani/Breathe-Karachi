@@ -16,12 +16,14 @@ def _build_sequences(X: np.ndarray, y: np.ndarray):
 
 def train_lstm(X_train, y_train, X_test, y_test):
     """
-    Train LSTM(64) → Dropout(0.4) → LSTM(32) → Dropout(0.4) → Dense(3).
+    Train LSTM(64) → Dropout(0.4) → LSTM(32) → Dropout(0.4) → Dense(4).
     Uses independent x_sc and y_sc scalers for better convergence.
     Returns (model, (x_sc, y_sc), metrics, hyperparameters).
     """
     import tensorflow as tf
     from tensorflow.keras.regularizers import L2
+
+    tf.keras.backend.clear_session()
 
     x_sc = StandardScaler()
     y_sc = StandardScaler()
@@ -98,14 +100,24 @@ def _build_model(n_features: int):
         tf.keras.layers.Dropout(0.4),
         tf.keras.layers.LSTM(32, kernel_regularizer=L2(1e-3)),
         tf.keras.layers.Dropout(0.4),
-        tf.keras.layers.Dense(3),
+        tf.keras.layers.Dense(4),
     ])
     model.compile(optimizer="adam", loss="huber")
     return model
 
 
-def _compute_metrics(y_true, y_pred) -> dict:
+def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     mae  = float(mean_absolute_error(y_true, y_pred))
     rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
     r2   = float(r2_score(y_true, y_pred))
-    return {"MAE": mae, "RMSE": rmse, "R2": r2}
+
+    metrics: dict = {"MAE": mae, "RMSE": rmse, "R2": r2}
+
+    for i in range(y_pred.shape[1]):
+        y_h    = y_true[:, i]
+        preds_h = y_pred[:, i]
+        metrics[f"MAE_d{i + 1}"]  = float(mean_absolute_error(y_h, preds_h))
+        metrics[f"RMSE_d{i + 1}"] = float(np.sqrt(mean_squared_error(y_h, preds_h)))
+        metrics[f"R2_d{i + 1}"]   = float(r2_score(y_h, preds_h))
+
+    return metrics

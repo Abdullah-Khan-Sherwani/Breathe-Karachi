@@ -188,7 +188,7 @@ lime_df, lime_model_type = lime_data if isinstance(lime_data, tuple) else (None,
 # ── Header ────────────────────────────────────────────────────────────────────
 
 st.markdown("# 🌬️ Breathe Karachi")
-st.caption("Air quality monitoring & 3-day forecasts · Karachi, Pakistan (24.86°N, 67.00°E)")
+st.caption("Air quality monitoring & 4-day forecasts · Karachi, Pakistan (24.86°N, 67.00°E)")
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📍 Live Snapshot",
@@ -211,6 +211,11 @@ with tab1:
     latest       = df.iloc[-1]
     aqi          = float(latest["AQI"])
     aqi_label, aqi_color = _aqi_band(aqi)
+
+    if aqi > 150:
+        st.error(f"⚠️ Air quality is {aqi_label} (AQI {aqi:.0f}). Sensitive groups should avoid outdoor activity.")
+    elif aqi > 100:
+        st.warning(f"Air quality is {aqi_label} (AQI {aqi:.0f}). Sensitive groups may be affected.")
 
     col_gauge, col_right = st.columns([1, 1.7], gap="large")
 
@@ -258,12 +263,12 @@ with tab1:
         )
         st.plotly_chart(gauge_fig, use_container_width=True)
 
-    # ── 3-Day Forecast ───────────────────────────────────────────────────────
+    # ── 4-Day Forecast ───────────────────────────────────────────────────────
     with col_right:
-        st.markdown("#### 3-Day Forecast")
+        st.markdown("#### 4-Day Forecast")
         if pred_doc and "forecasts" in pred_doc:
-            fc_cols = st.columns(3)
-            for i, fc in enumerate(pred_doc["forecasts"][:3]):
+            fc_cols = st.columns(4)
+            for i, fc in enumerate(pred_doc["forecasts"][:4]):
                 fc_aqi = float(fc["predicted_AQI"])
                 fc_label, fc_color = _aqi_band(fc_aqi)
                 day_name = pd.Timestamp(fc["date"]).strftime("%a")
@@ -393,7 +398,7 @@ with tab2:
         fig_trend.add_trace(go.Scatter(
             x=fc_dates, y=fc_aqis,
             mode="markers+lines",
-            name="3-day forecast",
+            name="4-day forecast",
             line=dict(color="#e74c3c", width=2, dash="dot"),
             marker=dict(size=9, color="#e74c3c"),
         ))
@@ -761,6 +766,20 @@ with tab5:
                     <div style="font-size:0.72rem;opacity:0.45;margin-top:0.2rem">{ver}</div>
                 </div>""", unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
+
+        for m in active_models[:2]:
+            horizon_rows = []
+            for d in range(1, 5):
+                if f"MAE_d{d}" in m:
+                    horizon_rows.append({
+                        "Horizon": f"Day {d} (t+{d})",
+                        "MAE": round(m[f"MAE_d{d}"], 2),
+                        "RMSE": round(m[f"RMSE_d{d}"], 2),
+                        "R²": round(m[f"R2_d{d}"], 3),
+                    })
+            if horizon_rows:
+                st.caption(f"Per-horizon metrics — {m.get('model_type','').upper()} v{m.get('version','')}")
+                st.dataframe(pd.DataFrame(horizon_rows), hide_index=True, use_container_width=True)
 
     if logs_df.empty:
         st.info("No training logs yet. Run `python src/train.py` first.")
