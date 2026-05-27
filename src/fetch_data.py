@@ -20,7 +20,7 @@ AIR_URL     = "https://air-quality-api.open-meteo.com/v1/air-quality"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 AIR_PARAMS     = "us_aqi,pm2_5,pm10,nitrogen_dioxide,sulphur_dioxide,carbon_monoxide,ozone"
-WEATHER_PARAMS = "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m"
+WEATHER_PARAMS = "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m,apparent_temperature,surface_pressure,wind_gusts_10m"
 
 COL_MAP = {
     "us_aqi": "AQI", "pm2_5": "PM2_5", "pm10": "PM10",
@@ -29,6 +29,9 @@ COL_MAP = {
     "temperature_2m": "Temperature", "relative_humidity_2m": "Humidity",
     "precipitation": "Precipitation",
     "wind_speed_10m": "wind_speed", "wind_direction_10m": "wind_direction",
+    "apparent_temperature": "apparent_temp",
+    "surface_pressure": "surface_pressure",
+    "wind_gusts_10m": "wind_gusts",
 }
 
 

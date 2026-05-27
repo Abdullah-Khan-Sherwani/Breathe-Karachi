@@ -16,22 +16,30 @@ def _build_sequences(X: np.ndarray, y: np.ndarray):
 
 def train_lstm(X_train, y_train, X_test, y_test):
     """
-    Train LSTM(64) → Dropout(0.2) → LSTM(32) → Dropout(0.2) → Dense(3).
-    Returns (model, scaler, metrics, hyperparameters).
+    Train LSTM(64) → Dropout(0.4) → LSTM(32) → Dropout(0.4) → Dense(3).
+    Uses independent x_sc and y_sc scalers for better convergence.
+    Returns (model, (x_sc, y_sc), metrics, hyperparameters).
     """
     import tensorflow as tf
+    from tensorflow.keras.regularizers import L2
 
-    scaler = StandardScaler()
-    X_tr_sc = scaler.fit_transform(X_train)
-    X_te_sc = scaler.transform(X_test)
+    x_sc = StandardScaler()
+    y_sc = StandardScaler()
 
-    # Combine to build sequences spanning the train/test boundary, then split back
-    X_all = np.vstack([X_tr_sc, X_te_sc])
-    y_all = np.vstack([np.array(y_train), np.array(y_test)])
+    X_tr_sc = x_sc.fit_transform(X_train)
+    X_te_sc = x_sc.transform(X_test)
+
+    y_train_arr = np.asarray(y_train)
+    y_test_arr  = np.asarray(y_test)
+
+    y_tr_sc = y_sc.fit_transform(y_train_arr)
+    y_te_sc = y_sc.transform(y_test_arr)
+
+    X_all  = np.vstack([X_tr_sc, X_te_sc])
+    y_all  = np.vstack([y_tr_sc, y_te_sc])
 
     X_seq, y_seq = _build_sequences(X_all, y_all)
 
-    # The first len(X_train) - SEQ_LEN + 1 sequences are fully within train data
     n_train_seq = len(X_train) - SEQ_LEN + 1
     X_s_tr, y_s_tr = X_seq[:n_train_seq], y_seq[:n_train_seq]
     X_s_te, y_s_te = X_seq[n_train_seq:], y_seq[n_train_seq:]
@@ -40,50 +48,59 @@ def train_lstm(X_train, y_train, X_test, y_test):
     model = _build_model(n_features)
 
     early_stop = tf.keras.callbacks.EarlyStopping(
-        monitor="val_loss", patience=20, restore_best_weights=True
+        monitor="val_loss", patience=25, restore_best_weights=True
+    )
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor="val_loss", factor=0.5, patience=10, min_lr=1e-5
     )
     model.fit(
         X_s_tr, y_s_tr,
         validation_split=0.1,
-        epochs=100,
+        epochs=150,
         batch_size=16,
-        callbacks=[early_stop],
+        callbacks=[early_stop, reduce_lr],
         verbose=0,
     )
 
     if len(X_s_te) == 0:
-        # Fallback when test set is too small for even one sequence
-        preds = model.predict(X_s_tr[-1:], verbose=0)
-        metrics = _compute_metrics(y_s_tr[-1:], preds)
+        preds_sc = model.predict(X_s_tr[-1:], verbose=0)
+        preds    = y_sc.inverse_transform(preds_sc)
+        y_true   = y_sc.inverse_transform(y_s_tr[-1:])
     else:
-        preds = model.predict(X_s_te, verbose=0)
-        metrics = _compute_metrics(y_s_te, preds)
+        preds_sc = model.predict(X_s_te, verbose=0)
+        preds    = y_sc.inverse_transform(preds_sc)
+        y_true   = y_sc.inverse_transform(y_s_te)
+
+    metrics = _compute_metrics(y_true, preds)
 
     hyperparameters = {
-        "seq_len": SEQ_LEN,
-        "units_1": 64,
-        "units_2": 32,
-        "dropout": 0.2,
-        "epochs": 100,
-        "patience": 20,
+        "seq_len":    SEQ_LEN,
+        "units_1":    64,
+        "units_2":    32,
+        "dropout":    0.4,
+        "l2_reg":     1e-3,
+        "loss":       "huber",
+        "epochs":     150,
+        "patience":   25,
         "batch_size": 16,
     }
 
-    return model, scaler, metrics, hyperparameters
+    return model, (x_sc, y_sc), metrics, hyperparameters
 
 
 def _build_model(n_features: int):
     import tensorflow as tf
+    from tensorflow.keras.regularizers import L2
 
     model = tf.keras.Sequential([
         tf.keras.Input(shape=(SEQ_LEN, n_features)),
-        tf.keras.layers.LSTM(64, return_sequences=True),
-        tf.keras.layers.Dropout(0.2),
-        tf.keras.layers.LSTM(32),
-        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.LSTM(64, return_sequences=True, kernel_regularizer=L2(1e-3)),
+        tf.keras.layers.Dropout(0.4),
+        tf.keras.layers.LSTM(32, kernel_regularizer=L2(1e-3)),
+        tf.keras.layers.Dropout(0.4),
         tf.keras.layers.Dense(3),
     ])
-    model.compile(optimizer="adam", loss="mse")
+    model.compile(optimizer="adam", loss="huber")
     return model
 
 
