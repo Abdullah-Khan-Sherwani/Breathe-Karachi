@@ -56,12 +56,13 @@ def _make_predict_fn(model, scaler, model_type: str, feat_cols: list):
         return preds[:, 0]  # return AQI_t+1
 
     def predict_lstm(X: np.ndarray) -> np.ndarray:
+        x_sc, y_sc = scaler if isinstance(scaler, tuple) else (scaler, None)
         results = []
         for row in X:
-            # tile single row into SEQ_LEN steps so LSTM sees a valid sequence
             seq = np.tile(row, (SEQ_LEN, 1))
-            seq_sc = scaler.transform(seq)
-            pred = model.predict(seq_sc[np.newaxis, ...], verbose=0)[0]
+            seq_sc = x_sc.transform(seq)
+            pred_sc = model.predict(seq_sc[np.newaxis, ...], verbose=0)
+            pred = y_sc.inverse_transform(pred_sc)[0] if y_sc is not None else pred_sc[0]
             results.append(pred[0])
         return np.array(results)
 

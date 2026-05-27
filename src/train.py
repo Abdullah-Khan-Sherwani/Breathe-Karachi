@@ -21,7 +21,7 @@ from config.db import (
 )
 from src.models import train_ridge, train_lgbm, train_lstm
 
-TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3"]
+TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3", "AQI_t+4"]
 EXCLUDE_COLS = {
     "date", "processed_at", "_id",
     # Tier-2: confirmed to hurt holdout performance
@@ -33,12 +33,20 @@ EXCLUDE_COLS = {
     "apparent_temp_lag_1", "apparent_temp_roll_mean_7",
     "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3",
     "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
+    # Tier-4: columns removed from pipeline but may exist in old MongoDB docs
+    "visibility", "visibility_t1", "visibility_t2", "visibility_t3",
+    "visibility_lag_1", "visibility_roll_mean_7",
+    "wind_speed_80m", "wind_speed_80m_t1", "wind_speed_80m_t2", "wind_speed_80m_t3",
+    "wind_speed_80m_lag_1",
+    "cape", "cape_t1", "cape_t2", "cape_t3", "cape_lag_1",
+    # PM2_5 leads excluded: dominant AQI driver inflates metrics; CAMS forecast used at inference instead
+    "PM2_5_t1", "PM2_5_t2", "PM2_5_t3", "PM2_5_t4",
 } | set(TARGET_COLS)
 
 _PER_HORIZON_KEYS = [
-    "MAE_d1", "MAE_d2", "MAE_d3",
-    "RMSE_d1", "RMSE_d2", "RMSE_d3",
-    "R2_d1", "R2_d2", "R2_d3",
+    "MAE_d1", "MAE_d2", "MAE_d3", "MAE_d4",
+    "RMSE_d1", "RMSE_d2", "RMSE_d3", "RMSE_d4",
+    "R2_d1", "R2_d2", "R2_d3", "R2_d4",
 ]
 
 
@@ -118,7 +126,7 @@ def run() -> None:
             _log(logs_col, model_type, "success", metrics, model_id)
             results.append((model_type, metrics["RMSE"], model_id))
             print(f"  {model_type}: MAE={metrics['MAE']:.2f}  RMSE={metrics['RMSE']:.2f}  R²={metrics['R2']:.3f}")
-            for h in range(1, 4):
+            for h in range(1, 5):
                 if f"R2_d{h}" in metrics:
                     print(f"    d{h}: MAE={metrics[f'MAE_d{h}']:.2f}  RMSE={metrics[f'RMSE_d{h}']:.2f}  R²={metrics[f'R2_d{h}']:.3f}")
         except Exception as exc:

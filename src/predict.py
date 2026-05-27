@@ -27,6 +27,7 @@ _ENSEMBLE_WEIGHTS = [
     (0.60, 0.40),   # day 1: LGBM dominates
     (0.15, 0.85),   # day 2: LSTM dominates
     (0.00, 1.00),   # day 3: LSTM only
+    (0.00, 1.00),   # day 4: LSTM only
 ]
 
 
@@ -103,7 +104,7 @@ def run() -> None:
         preds_lstm = _predict_lstm(lstm_model, lstm_scaler, lstm_meta["features"], df)
         component_models["lstm"] = lstm_meta["_id"]
 
-    predictions = np.zeros(3)
+    predictions = np.zeros(4)
     for d, (w_lgbm, w_lstm) in enumerate(_ENSEMBLE_WEIGHTS):
         if preds_lgbm is not None and preds_lstm is not None:
             predictions[d] = w_lgbm * preds_lgbm[d] + w_lstm * preds_lstm[d]
@@ -116,7 +117,7 @@ def run() -> None:
     forecasts = [
         {"date": (last_date + timedelta(days=i + 1)).isoformat(),
          "predicted_AQI": float(predictions[i])}
-        for i in range(3)
+        for i in range(4)
     ]
 
     doc = {
