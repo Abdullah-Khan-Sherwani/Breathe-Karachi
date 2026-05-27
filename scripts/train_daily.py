@@ -116,7 +116,8 @@ def train_lgbm(X_train, X_test, y_train, y_test, feat_names):
     for fname, score in imp.head(10).items():
         print(f"    {fname:<32}  {score:>6}")
 
-    return models, scaler, (m1, m2, m3)
+    lgbm_preds = np.column_stack(preds)   # shape (n_test, 3)
+    return models, scaler, (m1, m2, m3), lgbm_preds
 
 
 # ── LSTM: multi-output ────────────────────────────────────────────────────────
@@ -229,13 +230,33 @@ def train_lstm(X_train, X_test, y_train, y_test):
     m3 = compute_metrics(y_true[:, 2], preds[:, 2])
     print_per_horizon("LSTM multi-output results (30-day holdout)", m1, m2, m3)
 
-    return model, (x_sc, y_sc), (m1, m2, m3)
+    return model, (x_sc, y_sc), (m1, m2, m3), preds, y_true
+
+
+# ── Ensemble: per-horizon weighted blend ──────────────────────────────────────
+# Weights tuned to each model's relative strength per horizon.
+# day1: LGBM stronger → lean LGBM; day2/day3: LSTM stronger → lean LSTM.
+ENSEMBLE_WEIGHTS = [
+    (0.6, 0.4),   # day1: lgbm_w, lstm_w
+    (0.2, 0.8),   # day2
+    (0.1, 0.9),   # day3
+]
+
+
+def compute_ensemble(lgbm_preds, lstm_preds, y_test):
+    """Blend LGBM and LSTM predictions with per-horizon weights."""
+    ens_metrics = []
+    for h, (wl, ws) in enumerate(ENSEMBLE_WEIGHTS):
+        ens = wl * lgbm_preds[:, h] + ws * lstm_preds[:, h]
+        ens_metrics.append(compute_metrics(y_test[:, h], ens))
+    return tuple(ens_metrics)
 
 
 # ── Comparison table ──────────────────────────────────────────────────────────
-def print_comparison(lgbm_m, lstm_m):
+def print_comparison(lgbm_m, lstm_m, ens_m):
     m1l, m2l, m3l = lgbm_m
     m1s, m2s, m3s = lstm_m
+    m1e, m2e, m3e = ens_m
 
     print("\n" + "=" * 64)
     print("COMPARISON (30-day holdout)")
@@ -244,6 +265,7 @@ def print_comparison(lgbm_m, lstm_m):
     print(f"  {'Daily LGBM baseline':<28}  {0.773:>7.3f}  {0.284:>7.3f}  {0.120:>7.3f}")
     print(f"  {'LGBM per-horizon (this)':<28}  {m1l['R2']:>7.3f}  {m2l['R2']:>7.3f}  {m3l['R2']:>7.3f}")
     print(f"  {'LSTM multi-output (this)':<28}  {m1s['R2']:>7.3f}  {m2s['R2']:>7.3f}  {m3s['R2']:>7.3f}")
+    print(f"  {'Ensemble (weighted)':<28}  {m1e['R2']:>7.3f}  {m2e['R2']:>7.3f}  {m3e['R2']:>7.3f}")
     print("=" * 64)
 
     print("\nPer-horizon MAE:")
@@ -251,12 +273,14 @@ def print_comparison(lgbm_m, lstm_m):
     print("  " + "-" * 52)
     print(f"  {'LGBM per-horizon (this)':<28}  {m1l['MAE']:>7.2f}  {m2l['MAE']:>7.2f}  {m3l['MAE']:>7.2f}")
     print(f"  {'LSTM multi-output (this)':<28}  {m1s['MAE']:>7.2f}  {m2s['MAE']:>7.2f}  {m3s['MAE']:>7.2f}")
+    print(f"  {'Ensemble (weighted)':<28}  {m1e['MAE']:>7.2f}  {m2e['MAE']:>7.2f}  {m3e['MAE']:>7.2f}")
 
     print("\nPer-horizon RMSE:")
     print(f"  {'Model':<28}  {'RMSE_d1':>7}  {'RMSE_d2':>7}  {'RMSE_d3':>7}")
     print("  " + "-" * 52)
     print(f"  {'LGBM per-horizon (this)':<28}  {m1l['RMSE']:>7.2f}  {m2l['RMSE']:>7.2f}  {m3l['RMSE']:>7.2f}")
     print(f"  {'LSTM multi-output (this)':<28}  {m1s['RMSE']:>7.2f}  {m2s['RMSE']:>7.2f}  {m3s['RMSE']:>7.2f}")
+    print(f"  {'Ensemble (weighted)':<28}  {m1e['RMSE']:>7.2f}  {m2e['RMSE']:>7.2f}  {m3e['RMSE']:>7.2f}")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -279,7 +303,8 @@ if __name__ == "__main__":
     y_train = train_df[TARGET_COLS].values.astype(np.float32)
     y_test  = test_df[TARGET_COLS].values.astype(np.float32)
 
-    _, _, lgbm_metrics = train_lgbm(X_train, X_test, y_train, y_test, feat)
-    _, _, lstm_metrics  = train_lstm(X_train, X_test, y_train, y_test)
+    _, _, lgbm_metrics, lgbm_preds = train_lgbm(X_train, X_test, y_train, y_test, feat)
+    _, _, lstm_metrics, lstm_preds, y_test_lstm = train_lstm(X_train, X_test, y_train, y_test)
 
-    print_comparison(lgbm_metrics, lstm_metrics)
+    ens_metrics = compute_ensemble(lgbm_preds, lstm_preds, y_test_lstm)
+    print_comparison(lgbm_metrics, lstm_metrics, ens_metrics)
