@@ -26,10 +26,10 @@ from config.db import get_collection, COLLECTION_FEATURE_STORE
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3"]
+
+# Tier-2/Tier-3 features tested and confirmed to hurt both LGBM and LSTM on holdout
 EXCLUDE_COLS = {"date", "processed_at", "_id",
-                # Tier-2: redundant with existing features — hurt LSTM by ~0.13 R²
                 "AQI_trend_7d", "AQI_x_wind", "NO2_lag_3", "Humidity_lag_3",
-                # Tier-3: correlated with existing weather vars — hurt LSTM by ~0.20 R²
                 "surface_pressure", "surface_pressure_t1", "surface_pressure_t2", "surface_pressure_t3",
                 "surface_pressure_lag_1", "surface_pressure_roll_mean_7",
                 "apparent_temp", "apparent_temp_t1", "apparent_temp_t2", "apparent_temp_t3",
@@ -66,8 +66,9 @@ def load_data() -> pd.DataFrame:
     return df
 
 
-def get_feature_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c not in EXCLUDE_COLS]
+def get_feature_cols(df: pd.DataFrame, exclude: set | None = None) -> list[str]:
+    exc = EXCLUDE_COLS if exclude is None else exclude
+    return [c for c in df.columns if c not in exc]
 
 
 def time_split(df: pd.DataFrame, test_days: int = 30):
@@ -297,6 +298,7 @@ def print_comparison(lgbm_m, lstm_m, ens_m):
 if __name__ == "__main__":
     print("Loading data from MongoDB feature_store ...")
     df = load_data()
+
     feat = get_feature_cols(df)
 
     train_df, test_df = time_split(df)
