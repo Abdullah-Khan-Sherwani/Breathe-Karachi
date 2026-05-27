@@ -14,6 +14,37 @@ def _build_sequences(X: np.ndarray, y: np.ndarray):
     return np.array(Xs), np.array(ys)
 
 
+def train_lstm_full(X: np.ndarray, y: np.ndarray):
+    """Retrain on the complete labeled dataset (no holdout). Returns (model, (x_sc, y_sc))."""
+    import tensorflow as tf
+    tf.keras.backend.clear_session()
+
+    x_sc = StandardScaler()
+    y_sc = StandardScaler()
+    X_sc  = x_sc.fit_transform(X)
+    y_arr = np.asarray(y)
+    y_scl = y_sc.fit_transform(y_arr)
+
+    X_seq, y_seq = _build_sequences(X_sc, y_scl)
+
+    model = _build_model(X_sc.shape[1])
+    early_stop = tf.keras.callbacks.EarlyStopping(
+        monitor="val_loss", patience=25, restore_best_weights=True
+    )
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor="val_loss", factor=0.5, patience=10, min_lr=1e-5
+    )
+    model.fit(
+        X_seq, y_seq,
+        validation_split=0.1,
+        epochs=150,
+        batch_size=16,
+        callbacks=[early_stop, reduce_lr],
+        verbose=0,
+    )
+    return model, (x_sc, y_sc)
+
+
 def train_lstm(X_train, y_train, X_test, y_test):
     """
     Train LSTM(64) → Dropout(0.4) → LSTM(32) → Dropout(0.4) → Dense(4).

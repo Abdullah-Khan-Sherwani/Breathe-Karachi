@@ -84,6 +84,16 @@ def _try_load(model_type: str):
 def run() -> None:
     df = _load_feature_store(SEQ_LEN + 10)
 
+    last_date = df["date"].max().date()
+    today = datetime.now(timezone.utc).date()
+    staleness_days = (today - last_date).days
+
+    print(f"[predict] Anchor date (latest feature_store row): {last_date}")
+    print(f"[predict] Today (UTC): {today}  |  Staleness: {staleness_days} day(s)")
+    if staleness_days > 2:
+        print(f"[predict] WARNING: Feature store is {staleness_days} days stale — "
+              f"predictions anchored to {last_date}, not today.")
+
     lgbm_result = _try_load("lgbm")
     lstm_result = _try_load("lstm")
 
@@ -96,13 +106,21 @@ def run() -> None:
 
     if lgbm_result is not None:
         lgbm_model, lgbm_scaler, lgbm_meta = lgbm_result
+        trained_at = lgbm_meta.get("trained_at", "unknown")
+        print(f"[predict] Loaded LGBM  id={lgbm_meta['_id']}  trained_at={trained_at}")
         preds_lgbm = _predict_tabular(lgbm_model, lgbm_scaler, lgbm_meta["features"], df)
         component_models["lgbm"] = lgbm_meta["_id"]
+    else:
+        print("[predict] LGBM model not found — ensemble will use LSTM only.")
 
     if lstm_result is not None:
         lstm_model, lstm_scaler, lstm_meta = lstm_result
+        trained_at = lstm_meta.get("trained_at", "unknown")
+        print(f"[predict] Loaded LSTM  id={lstm_meta['_id']}  trained_at={trained_at}")
         preds_lstm = _predict_lstm(lstm_model, lstm_scaler, lstm_meta["features"], df)
         component_models["lstm"] = lstm_meta["_id"]
+    else:
+        print("[predict] LSTM model not found — ensemble will use LGBM only.")
 
     predictions = np.zeros(4)
     for d, (w_lgbm, w_lstm) in enumerate(_ENSEMBLE_WEIGHTS):
@@ -113,23 +131,28 @@ def run() -> None:
         else:
             predictions[d] = preds_lstm[d]
 
-    last_date = df["date"].max().date()
-    forecasts = [
-        {"date": (last_date + timedelta(days=i + 1)).isoformat(),
-         "predicted_AQI": float(predictions[i])}
-        for i in range(4)
-    ]
+    print()
+    print("[predict] Forecast dates and predicted AQI:")
+    print(f"  {'Date':<12}  {'LGBM':>7}  {'LSTM':>7}  {'Weights (L/G)':>14}  {'Ensemble':>9}")
+    forecasts = []
+    for i in range(4):
+        fdate = (last_date + timedelta(days=i + 1)).isoformat()
+        w_lgbm, w_lstm = _ENSEMBLE_WEIGHTS[i]
+        lgbm_val = f"{preds_lgbm[i]:.1f}" if preds_lgbm is not None else "  n/a"
+        lstm_val = f"{preds_lstm[i]:.1f}" if preds_lstm is not None else "  n/a"
+        print(f"  {fdate:<12}  {lgbm_val:>7}  {lstm_val:>7}  "
+              f"{w_lgbm:.2f}/{w_lstm:.2f}{'':>5}  {predictions[i]:>9.1f}")
+        forecasts.append({"date": fdate, "predicted_AQI": float(predictions[i])})
 
     doc = {
-        "predicted_at":    datetime.now(timezone.utc),
-        "model_type":      "ensemble",
+        "predicted_at":     datetime.now(timezone.utc),
+        "model_type":       "ensemble",
         "component_models": component_models,
-        "forecasts":       forecasts,
+        "anchor_date":      last_date.isoformat(),
+        "forecasts":        forecasts,
     }
     get_collection(COLLECTION_PREDICTIONS).insert_one(doc)
-
-    for f in forecasts:
-        print(f"  {f['date']}: AQI = {f['predicted_AQI']:.1f}")
+    print()
     print("Forecast written to predictions.")
 
 

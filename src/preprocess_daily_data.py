@@ -449,8 +449,10 @@ def add_aq_leads(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_tier3_features(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Lead windows (t+1/t+2/t+3), lag-1, and 7-day rolling mean for the three
+    Lead windows (t+1/t+2/t+3/t+4), lag-1, and 7-day rolling mean for the three
     Open-Meteo tier-3 variables: surface_pressure, apparent_temp, wind_gusts.
+    cape/visibility/wind_speed_80m are handled in add_weather_leads (leads only —
+    their lag/roll cols would be all-NaN for historical rows and break the dropna).
     """
     tier3_vars = ["surface_pressure", "apparent_temp", "wind_gusts"]
     for col in tier3_vars:
@@ -546,19 +548,32 @@ def fill_lead_features_with_forecast(df: pd.DataFrame) -> pd.DataFrame:
     """
     lead_nan_mask = df[_LEAD_COLS[0]].isna() if _LEAD_COLS[0] in df.columns else pd.Series(False, index=df.index)
     if not lead_nan_mask.any():
+        print("  [fill_leads] All lead features already populated — no forecast fill needed.")
         return df
+
+    rows_needing_fill = df.loc[lead_nan_mask, "date"].dt.date.tolist()
+    print(f"  [fill_leads] {len(rows_needing_fill)} row(s) have NaN lead features: {[str(d) for d in rows_needing_fill]}")
 
     forecast    = _fetch_daily_forecast()
     aq_forecast = _fetch_daily_aq_forecast()
+
+    print(f"  [fill_leads] Weather forecast dates available: {sorted(forecast.keys())}")
+    print(f"  [fill_leads] AQ forecast dates available:      {sorted(aq_forecast.keys())}")
+
     if not forecast and not aq_forecast:
+        print("  [fill_leads] WARNING: Both forecast APIs returned empty — lead features remain NaN.")
         return df
 
     df = df.copy()
     for idx in df.index[lead_nan_mask]:
         anchor = df.at[idx, "date"]
         anchor_date = anchor.date() if hasattr(anchor, "date") else pd.Timestamp(anchor).date()
+        print(f"  [fill_leads] Filling leads for anchor date {anchor_date}:")
+
         for offset in [1, 2, 3, 4]:
             fdate = (pd.Timestamp(anchor_date) + pd.Timedelta(days=offset)).date().isoformat()
+            filled_cols = []
+            missing_cols = []
 
             # ── Weather leads ────────────────────────────────────────────────
             if fdate in forecast:
@@ -568,19 +583,51 @@ def fill_lead_features_with_forecast(df: pd.DataFrame) -> pd.DataFrame:
                     "surface_pressure", "apparent_temp", "wind_gusts",
                     "BLH", "cloud_cover", "shortwave_rad",
                 ]:
+                    lead_key = f"{col}_t{offset}"
                     if col in fw:
-                        df.at[idx, f"{col}_t{offset}"] = fw[col]
+                        df.at[idx, lead_key] = fw[col]
+                        filled_cols.append(lead_key)
+                    else:
+                        missing_cols.append(lead_key)
                 if "wind_direction" in fw:
                     rad = np.deg2rad(fw["wind_direction"])
                     df.at[idx, f"wind_dir_sin_t{offset}"] = np.sin(rad)
                     df.at[idx, f"wind_dir_cos_t{offset}"] = np.cos(rad)
+                    filled_cols += [f"wind_dir_sin_t{offset}", f"wind_dir_cos_t{offset}"]
+                else:
+                    missing_cols += [f"wind_dir_sin_t{offset}", f"wind_dir_cos_t{offset}"]
+            else:
+                missing_cols.append(f"weather_t{offset} (forecast date {fdate} not in API response)")
 
             # ── Air quality leads (PM2_5, aod, dust, uv_index from CAMS) ────
             if fdate in aq_forecast:
                 faq = aq_forecast[fdate]
                 for col in ["PM2_5", "aod", "dust", "uv_index"]:
+                    lead_key = f"{col}_t{offset}"
                     if col in faq:
-                        df.at[idx, f"{col}_t{offset}"] = faq[col]
+                        df.at[idx, lead_key] = faq[col]
+                        filled_cols.append(lead_key)
+                    else:
+                        missing_cols.append(lead_key)
+            else:
+                missing_cols.append(f"aq_t{offset} (AQ forecast date {fdate} not in API response)")
+
+            print(f"    t+{offset} ({fdate}): filled {len(filled_cols)} cols", end="")
+            if missing_cols:
+                print(f", STILL NaN: {missing_cols}", end="")
+            print()
+
+    # Final check: report any _LEAD_COLS still NaN after filling
+    lead_cols_present = [c for c in _LEAD_COLS if c in df.columns]
+    still_nan = {
+        c: df.loc[lead_nan_mask, c].isna().sum()
+        for c in lead_cols_present
+        if df.loc[lead_nan_mask, c].isna().any()
+    }
+    if still_nan:
+        print(f"  [fill_leads] WARNING: {len(still_nan)} lead col(s) still NaN after fill: {list(still_nan.keys())}")
+    else:
+        print(f"  [fill_leads] All {len(lead_cols_present)} lead columns successfully filled.")
 
     return df
 

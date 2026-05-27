@@ -1,13 +1,14 @@
 """
 Training orchestrator — loads feature_store, time-aware split (last 30 days = test),
-trains Ridge + LightGBM + LSTM, saves the best RMSE model to model_registry,
-and logs all three runs to model_logs.
+trains LightGBM + LSTM, saves the best RMSE model to model_registry,
+and logs both runs to model_logs.
 """
 
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
+import os
 from datetime import datetime, timezone
 
 import numpy as np
@@ -16,10 +17,11 @@ import pandas as pd
 from config.db import (
     get_collection,
     save_model,
+    purge_old_models,
     COLLECTION_FEATURE_STORE,
     COLLECTION_MODEL_LOGS,
 )
-from src.models import train_ridge, train_lgbm, train_lstm
+from src.models import train_lgbm, train_lgbm_full, train_lstm, train_lstm_full
 
 TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3", "AQI_t+4"]
 EXCLUDE_COLS = {
@@ -33,12 +35,13 @@ EXCLUDE_COLS = {
     "apparent_temp_lag_1", "apparent_temp_roll_mean_7",
     "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3", "wind_gusts_t4",
     "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
-    # Tier-4: columns removed from pipeline but may exist in old MongoDB docs
-    "visibility", "visibility_t1", "visibility_t2", "visibility_t3",
+    # Sparse variables: null in ERA5 archive, forecast-only — excluded (all-NaN for historical rows)
+    "visibility", "visibility_t1", "visibility_t2", "visibility_t3", "visibility_t4",
     "visibility_lag_1", "visibility_roll_mean_7",
-    "wind_speed_80m", "wind_speed_80m_t1", "wind_speed_80m_t2", "wind_speed_80m_t3",
-    "wind_speed_80m_lag_1",
-    "cape", "cape_t1", "cape_t2", "cape_t3", "cape_lag_1",
+    "wind_speed_80m", "wind_speed_80m_t1", "wind_speed_80m_t2", "wind_speed_80m_t3", "wind_speed_80m_t4",
+    "wind_speed_80m_lag_1", "wind_speed_80m_roll_mean_7",
+    "cape", "cape_t1", "cape_t2", "cape_t3", "cape_t4",
+    "cape_lag_1", "cape_roll_mean_7",
     # PM2_5 leads excluded: dominant AQI driver inflates metrics; CAMS forecast used at inference instead
     "PM2_5_t1", "PM2_5_t2", "PM2_5_t3", "PM2_5_t4",
 } | set(TARGET_COLS)
@@ -96,42 +99,62 @@ def run() -> None:
     if len(test) == 0:
         raise RuntimeError("Test split is empty — need at least 30 days of data.")
 
-    X_tr, y_tr = train[feat].values, train[TARGET_COLS].values
-    X_te, y_te = test[feat].values,  test[TARGET_COLS].values
+    X_tr,   y_tr   = train[feat].values, train[TARGET_COLS].values
+    X_te,   y_te   = test[feat].values,  test[TARGET_COLS].values
+    X_full, y_full = df[feat].values,    df[TARGET_COLS].values
 
-    print(f"Train: {len(X_tr)} rows | Test: {len(X_te)} rows | Features: {len(feat)}")
+    print(f"Holdout eval : {len(X_tr)} train / {len(X_te)} test rows")
+    print(f"Full retrain : {len(X_full)} rows  |  Features: {len(feat)}")
 
     logs_col = get_collection(COLLECTION_MODEL_LOGS)
-    results  = []
 
-    trainers = [
-        ("ridge", train_ridge),
-        ("lgbm",  train_lgbm),
-        ("lstm",  train_lstm),
-    ]
+    eval_trainers = [("lgbm", train_lgbm), ("lstm", train_lstm)]
+    full_trainers = {"lgbm": train_lgbm_full, "lstm": train_lstm_full}
 
-    for model_type, trainer in trainers:
-        print(f"\nTraining {model_type}...")
+    # Step 1 — evaluate on 30-day holdout to get honest metrics
+    holdout: dict = {}
+    for model_type, trainer in eval_trainers:
+        print(f"\nEvaluating {model_type} on holdout...")
         try:
-            model, scaler, metrics, hparams = trainer(X_tr, y_tr, X_te, y_te)
-            model_id = save_model(
-                model=model,
-                scaler=scaler,
-                model_type=model_type,
-                metrics=metrics,
-                feature_cols=feat,
-                hyperparameters=hparams,
-                extra_metadata={"train_samples": len(X_tr), "test_samples": len(X_te)},
-            )
-            _log(logs_col, model_type, "success", metrics, model_id)
-            results.append((model_type, metrics["RMSE"], model_id))
+            _, _, metrics, hparams = trainer(X_tr, y_tr, X_te, y_te)
+            holdout[model_type] = (metrics, hparams)
             print(f"  {model_type}: MAE={metrics['MAE']:.2f}  RMSE={metrics['RMSE']:.2f}  R²={metrics['R2']:.3f}")
             for h in range(1, 5):
                 if f"R2_d{h}" in metrics:
                     print(f"    d{h}: MAE={metrics[f'MAE_d{h}']:.2f}  RMSE={metrics[f'RMSE_d{h}']:.2f}  R²={metrics[f'R2_d{h}']:.3f}")
         except Exception as exc:
+            print(f"  {model_type} eval FAILED: {exc}")
+
+    # Step 2 — retrain on full labeled data; save with holdout metrics
+    results = []
+    for model_type, full_trainer in full_trainers.items():
+        if model_type not in holdout:
+            continue
+        metrics, hparams = holdout[model_type]
+        print(f"\nFull retrain {model_type} on {len(X_full)} rows...")
+        try:
+            model_full, scaler_full = full_trainer(X_full, y_full)
+            model_id = save_model(
+                model=model_full,
+                scaler=scaler_full,
+                model_type=model_type,
+                metrics=metrics,
+                feature_cols=feat,
+                hyperparameters=hparams,
+                extra_metadata={
+                    "train_samples": len(X_full),
+                    "test_samples":  len(X_te),
+                    "holdout_eval":  True,
+                    "automated":     os.getenv("AUTOMATED_RUN") == "true",
+                },
+            )
+            _log(logs_col, model_type, "success", metrics, model_id)
+            purge_old_models(model_type)
+            results.append((model_type, metrics["RMSE"], model_id))
+            print(f"  saved  id={model_id}")
+        except Exception as exc:
             _log(logs_col, model_type, "error", {"error": str(exc)})
-            print(f"  {model_type} FAILED: {exc}")
+            print(f"  {model_type} full retrain FAILED: {exc}")
 
     if not results:
         raise RuntimeError("All models failed to train.")

@@ -2,7 +2,7 @@ name: Training Pipeline
 
 on:
   schedule:
-    - cron: "0 3 * * *"   # 3 AM UTC = 8 AM PKT
+    - cron: "30 19 * * *"   # 19:30 UTC = 00:30 PKT (12:30 AM Karachi)
   workflow_dispatch:
 
 jobs:
@@ -13,6 +13,7 @@ jobs:
       MONGODB_USERNAME: ${{ secrets.MONGODB_USERNAME }}
       MONGODB_PASSWORD: ${{ secrets.MONGODB_PASSWORD }}
       MONGODB_CLUSTER:  ${{ secrets.MONGODB_CLUSTER }}
+      AUTOMATED_RUN:    "true"
 
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +29,7 @@ jobs:
       - name: Train models
         run: python src/train.py
 
-      - name: Generate 3-day forecast
+      - name: Generate 4-day forecast
         run: python src/predict.py
 
       - name: Generate LIME explanation
