@@ -25,6 +25,7 @@ from config.db import get_collection, COLLECTION_FEATURE_STORE
 IQR_COLS = [
     "PM10", "SO2", "NO2", "O3",
     "Temperature", "Humidity", "Precipitation", "wind_speed",
+    "BLH", "shortwave_rad", "aod", "dust",
 ]
 
 RAW_COLS = [
@@ -33,23 +34,31 @@ RAW_COLS = [
     "Temperature", "Humidity", "Precipitation",
     "wind_speed", "wind_direction",
     "apparent_temp", "surface_pressure", "wind_gusts",
+    # New variables
+    "BLH", "cloud_cover", "shortwave_rad", "uv_index",
+    "aod", "dust",
 ]
 
 # Columns produced by forward-shifting — NaN for the last 3 rows by design.
 # These are filled from the forecast API before upserting, so they should not
 # trigger dropna() on the main pipeline.
 _LEAD_COLS = (
-    [f"{c}_t{d}" for c in ["Temperature", "Humidity", "Precipitation", "wind_speed"] for d in [1, 2, 3]]
-    + [f"wind_dir_{s}_t{d}" for s in ["sin", "cos"] for d in [1, 2, 3]]
-    + [f"{c}_t{d}" for c in ["surface_pressure", "apparent_temp", "wind_gusts"] for d in [1, 2, 3]]
+    [f"{c}_t{d}" for c in ["Temperature", "Humidity", "Precipitation", "wind_speed"] for d in [1, 2, 3, 4]]
+    + [f"wind_dir_{s}_t{d}" for s in ["sin", "cos"] for d in [1, 2, 3, 4]]
+    + [f"{c}_t{d}" for c in ["surface_pressure", "apparent_temp", "wind_gusts"] for d in [1, 2, 3, 4]]
+    # New weather leads
+    + [f"{c}_t{d}" for c in ["BLH", "cloud_cover", "shortwave_rad"] for d in [1, 2, 3, 4]]
+    # Air quality leads (PM2_5, AOD, dust, uv_index from CAMS forecast)
+    + [f"{c}_t{d}" for c in ["PM2_5", "aod", "dust", "uv_index"] for d in [1, 2, 3, 4]]
 )
-_TARGET_COLS = ["AQI_t+1", "AQI_t+2", "AQI_t+3"]
+_TARGET_COLS = ["AQI_t+1", "AQI_t+2", "AQI_t+3", "AQI_t+4"]
 
 _FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 _FORECAST_HOURLY = (
     "temperature_2m,relative_humidity_2m,precipitation,"
     "wind_speed_10m,wind_direction_10m,"
-    "apparent_temperature,surface_pressure,wind_gusts_10m"
+    "apparent_temperature,surface_pressure,wind_gusts_10m,"
+    "boundary_layer_height,cloud_cover,shortwave_radiation"
 )
 _FORECAST_COL_MAP = {
     "temperature_2m": "Temperature",
@@ -60,6 +69,19 @@ _FORECAST_COL_MAP = {
     "apparent_temperature": "apparent_temp",
     "surface_pressure": "surface_pressure",
     "wind_gusts_10m": "wind_gusts",
+    "boundary_layer_height": "BLH",
+    "cloud_cover": "cloud_cover",
+    "shortwave_radiation": "shortwave_rad",
+}
+
+# Air quality forecast API (CAMS) — for PM2_5, AOD, dust leads
+_AQ_FORECAST_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
+_AQ_FORECAST_HOURLY = "pm2_5,aerosol_optical_depth,dust,uv_index"
+_AQ_FORECAST_COL_MAP = {
+    "pm2_5": "PM2_5",
+    "aerosol_optical_depth": "aod",
+    "dust": "dust",
+    "uv_index": "uv_index",
 }
 LAT, LON, TIMEZONE = 24.8607, 67.0011, "Asia/Karachi"
 
@@ -278,6 +300,36 @@ def add_rolling_extended(df: pd.DataFrame) -> pd.DataFrame:
 # Derived weather / meteorological features
 # ---------------------------------------------------------------------------
 
+def add_new_var_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Derived, lag-1, and rolling stats for new Tier-A/B variables.
+    All rolling windows applied to shift(1) for leak-free computation.
+    vpd is derived from Temperature and Humidity (no separate API fetch needed).
+    log_aod uses log1p since AOD follows a log-normal distribution.
+    """
+    # vpd derived from existing columns — no API fetch required
+    if "Temperature" in df.columns and "Humidity" in df.columns:
+        sat_vp = 0.6108 * np.exp(17.27 * df["Temperature"] / (df["Temperature"] + 237.3))
+        df["vpd"] = sat_vp * (1.0 - df["Humidity"] / 100.0)
+
+    if "aod" in df.columns:
+        df["log_aod"] = np.log1p(df["aod"])
+
+    new_vars = [
+        "BLH", "cloud_cover", "shortwave_rad", "uv_index",
+        "vpd", "aod", "dust",
+    ]
+    for col in new_vars:
+        if col in df.columns:
+            df[f"{col}_lag_1"] = df[col].shift(1)
+
+    for col in ["BLH", "aod", "dust"]:
+        if col in df.columns:
+            df[f"{col}_roll_mean_7"] = df[col].shift(1).rolling(7).mean()
+
+    return df
+
+
 def add_derived_weather(df: pd.DataFrame) -> pd.DataFrame:
     """
     Physics-inspired and threshold-based weather features.
@@ -353,23 +405,41 @@ def add_tier2_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def add_weather_leads(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Future weather values (t+1, t+2, t+3) for temperature, humidity,
-    precipitation, wind speed, and wind direction (as sin/cos components).
-    These represent actual future observations used in training; at inference
-    time they are supplied from a weather forecast API.
+    Future weather values (t+1, t+2, t+3) used in training as actual future
+    observations; at inference time supplied from the Open-Meteo forecast API.
+    No data leakage: these are forward-shifted historical actuals for training
+    rows, replaced by API forecasts for the last 3 rows.
     """
-    for col in ["Temperature", "Humidity", "Precipitation", "wind_speed"]:
+    weather_lead_cols = [
+        "Temperature", "Humidity", "Precipitation", "wind_speed",
+        "BLH", "cloud_cover", "shortwave_rad",
+    ]
+    for col in weather_lead_cols:
         if col in df.columns:
-            for lag in [1, 2, 3]:
+            for lag in [1, 2, 3, 4]:
                 df[f"{col}_t{lag}"] = df[col].shift(-lag)
 
     if "wind_direction" in df.columns:
-        for lag in [1, 2, 3]:
+        for lag in [1, 2, 3, 4]:
             wd_lead = df["wind_direction"].shift(-lag)
             wd_rad = np.deg2rad(wd_lead)
             df[f"wind_dir_sin_t{lag}"] = np.sin(wd_rad)
             df[f"wind_dir_cos_t{lag}"] = np.cos(wd_rad)
 
+    return df
+
+
+def add_aq_leads(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Future air quality values (t+1, t+2, t+3) for PM2_5, AOD, and dust.
+    Training: forward-shifted actual values (same train/serve skew as weather leads).
+    Inference: filled from CAMS air quality forecast API.
+    Target is US AQI — PM2_5/aod/dust leads are input features, not the target.
+    """
+    for col in ["PM2_5", "aod", "dust", "uv_index"]:
+        if col in df.columns:
+            for lag in [1, 2, 3, 4]:
+                df[f"{col}_t{lag}"] = df[col].shift(-lag)
     return df
 
 
@@ -389,6 +459,7 @@ def add_tier3_features(df: pd.DataFrame) -> pd.DataFrame:
         df[f"{col}_t1"] = df[col].shift(-1)
         df[f"{col}_t2"] = df[col].shift(-2)
         df[f"{col}_t3"] = df[col].shift(-3)
+        df[f"{col}_t4"] = df[col].shift(-4)
         df[f"{col}_lag_1"] = df[col].shift(1)
         df[f"{col}_roll_mean_7"] = df[col].shift(1).rolling(7).mean()
     return df
@@ -399,10 +470,11 @@ def add_tier3_features(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def add_targets(df: pd.DataFrame) -> pd.DataFrame:
-    """Next-1/2/3-day AQI targets for supervised learning."""
+    """Next-1/2/3/4-day AQI targets for supervised learning."""
     df["AQI_t+1"] = df["AQI"].shift(-1)
     df["AQI_t+2"] = df["AQI"].shift(-2)
     df["AQI_t+3"] = df["AQI"].shift(-3)
+    df["AQI_t+4"] = df["AQI"].shift(-4)
     return df
 
 
@@ -421,7 +493,7 @@ def _fetch_daily_forecast() -> dict[str, dict]:
             params={
                 "latitude": LAT, "longitude": LON, "timezone": TIMEZONE,
                 "hourly": _FORECAST_HOURLY,
-                "forecast_days": 4,
+                "forecast_days": 5,
             },
             timeout=15,
         ).json()
@@ -438,39 +510,78 @@ def _fetch_daily_forecast() -> dict[str, dict]:
         return {}
 
 
+def _fetch_daily_aq_forecast() -> dict[str, dict]:
+    """
+    Fetch next 4 days of hourly air quality from CAMS via Open-Meteo and
+    average to daily. Returns {date_str: {col: value}} for forecast dates.
+    """
+    try:
+        resp = requests.get(
+            _AQ_FORECAST_URL,
+            params={
+                "latitude": LAT, "longitude": LON, "timezone": TIMEZONE,
+                "hourly": _AQ_FORECAST_HOURLY,
+                "forecast_days": 5,
+            },
+            timeout=15,
+        ).json()
+        hourly = resp.get("hourly", {})
+        df = pd.DataFrame(hourly)
+        df["time"] = pd.to_datetime(df["time"])
+        df["date"] = df["time"].dt.date
+        df = df.drop(columns=["time"])
+        df = df.rename(columns=_AQ_FORECAST_COL_MAP)
+        daily = df.groupby("date").mean()
+        return {d.isoformat(): row.to_dict() for d, row in daily.iterrows()}
+    except Exception as e:
+        print(f"  AQ forecast fetch failed: {e}")
+        return {}
+
+
 def fill_lead_features_with_forecast(df: pd.DataFrame) -> pd.DataFrame:
     """
-    For the last 3 rows (which have NaN in lead/target columns from shift(-N)),
+    For the last 4 rows (which have NaN in lead/target columns from shift(-N)),
     fill lead weather features using Open-Meteo forecast data.
-    Targets (AQI_t+1/+2/+3) remain NaN — they are unknowable today.
+    Targets (AQI_t+1/+2/+3/+4) remain NaN — they are unknowable today.
     """
     lead_nan_mask = df[_LEAD_COLS[0]].isna() if _LEAD_COLS[0] in df.columns else pd.Series(False, index=df.index)
     if not lead_nan_mask.any():
         return df
 
-    forecast = _fetch_daily_forecast()
-    if not forecast:
+    forecast    = _fetch_daily_forecast()
+    aq_forecast = _fetch_daily_aq_forecast()
+    if not forecast and not aq_forecast:
         return df
 
     df = df.copy()
     for idx in df.index[lead_nan_mask]:
         anchor = df.at[idx, "date"]
         anchor_date = anchor.date() if hasattr(anchor, "date") else pd.Timestamp(anchor).date()
-        for offset in [1, 2, 3]:
+        for offset in [1, 2, 3, 4]:
             fdate = (pd.Timestamp(anchor_date) + pd.Timedelta(days=offset)).date().isoformat()
-            if fdate not in forecast:
-                continue
-            fw = forecast[fdate]
-            for col in ["Temperature", "Humidity", "Precipitation", "wind_speed"]:
-                if col in fw:
-                    df.at[idx, f"{col}_t{offset}"] = fw[col]
-            if "wind_direction" in fw:
-                rad = np.deg2rad(fw["wind_direction"])
-                df.at[idx, f"wind_dir_sin_t{offset}"] = np.sin(rad)
-                df.at[idx, f"wind_dir_cos_t{offset}"] = np.cos(rad)
-            for col in ["surface_pressure", "apparent_temp", "wind_gusts"]:
-                if col in fw:
-                    df.at[idx, f"{col}_t{offset}"] = fw[col]
+
+            # ── Weather leads ────────────────────────────────────────────────
+            if fdate in forecast:
+                fw = forecast[fdate]
+                for col in [
+                    "Temperature", "Humidity", "Precipitation", "wind_speed",
+                    "surface_pressure", "apparent_temp", "wind_gusts",
+                    "BLH", "cloud_cover", "shortwave_rad",
+                ]:
+                    if col in fw:
+                        df.at[idx, f"{col}_t{offset}"] = fw[col]
+                if "wind_direction" in fw:
+                    rad = np.deg2rad(fw["wind_direction"])
+                    df.at[idx, f"wind_dir_sin_t{offset}"] = np.sin(rad)
+                    df.at[idx, f"wind_dir_cos_t{offset}"] = np.cos(rad)
+
+            # ── Air quality leads (PM2_5, aod, dust, uv_index from CAMS) ────
+            if fdate in aq_forecast:
+                faq = aq_forecast[fdate]
+                for col in ["PM2_5", "aod", "dust", "uv_index"]:
+                    if col in faq:
+                        df.at[idx, f"{col}_t{offset}"] = faq[col]
+
     return df
 
 
@@ -541,25 +652,31 @@ def run() -> None:
     # 9. Extended rolling (AQI roll 7/14, ewm 7/14/30, PM2_5 roll, AQI_diff_2)
     df = add_rolling_extended(df)
 
-    # 10. Derived weather (dew_point, temp_inversion, AQI_high_flag, stagnant_air,
+    # 10. New variable features (BLH, cloud_cover, shortwave_rad, uv_index, vpd,
+    #     visibility, wind_speed_80m, cape, aod, dust — lag_1, roll_mean_7, log_aod)
+    df = add_new_var_features(df)
+
+    # 11. Derived weather (dew_point, temp_inversion, AQI_high_flag, stagnant_air,
     #     wind_dir_sin, wind_dir_cos, wind_x_PM2_5_lag1)
     #     MUST follow add_extended_lags so PM2_5_lag_1 exists
     df = add_derived_weather(df)
 
-    # 11. Interaction features (PM2_5_x_Humidity, CO_x_Temperature, AQI_x_month_sin)
+    # 12. Interaction features (PM2_5_x_Humidity, CO_x_Temperature, AQI_x_month_sin)
     df = add_interaction_features(df)
 
-    # 12. Tier-2 (AQI_trend_7d, AQI_x_wind, NO2_lag_3, Humidity_lag_3)
+    # 13. Tier-2 (AQI_trend_7d, AQI_x_wind, NO2_lag_3, Humidity_lag_3)
     df = add_tier2_features(df)
 
-    # 13. Weather leads (Temperature/Humidity/Precipitation/wind_speed _t1/t2/t3,
-    #     wind_dir_sin/cos_t1/t2/t3)
+    # 14. Weather leads (all weather vars _t1/t2/t3 incl. BLH, cloud_cover, etc.)
     df = add_weather_leads(df)
 
-    # 14. Tier-3 leads/lags (surface_pressure, apparent_temp, wind_gusts)
+    # 15. Tier-3 leads/lags (surface_pressure, apparent_temp, wind_gusts)
     df = add_tier3_features(df)
 
-    # 15. Targets
+    # 16. Air quality leads (PM2_5, aod, dust _t1/t2/t3 from CAMS forecast)
+    df = add_aq_leads(df)
+
+    # 17. Targets
     df = add_targets(df)
 
     # For the last 3 rows, lead features are NaN because no future observations
