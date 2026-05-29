@@ -1,7 +1,7 @@
 """
 Training orchestrator — loads feature_store, time-aware split (last 30 days = test),
-trains LightGBM + LSTM, saves the best RMSE model to model_registry,
-and logs both runs to model_logs.
+trains Ridge + LightGBM + LSTM, saves all to model_registry with holdout metrics,
+and logs all runs to model_logs. Ensemble in predict.py uses only lgbm + lstm.
 """
 
 import sys
@@ -21,7 +21,7 @@ from config.db import (
     COLLECTION_FEATURE_STORE,
     COLLECTION_MODEL_LOGS,
 )
-from src.models import train_lgbm, train_lgbm_full, train_lstm, train_lstm_full
+from src.models import train_ridge, train_ridge_full, train_lgbm, train_lgbm_full, train_lstm, train_lstm_full
 
 TARGET_COLS  = ["AQI_t+1", "AQI_t+2", "AQI_t+3", "AQI_t+4"]
 EXCLUDE_COLS = {
@@ -108,8 +108,8 @@ def run() -> None:
 
     logs_col = get_collection(COLLECTION_MODEL_LOGS)
 
-    eval_trainers = [("lgbm", train_lgbm), ("lstm", train_lstm)]
-    full_trainers = {"lgbm": train_lgbm_full, "lstm": train_lstm_full}
+    eval_trainers = [("lgbm", train_lgbm), ("lstm", train_lstm), ("ridge", train_ridge)]
+    full_trainers = {"lgbm": train_lgbm_full, "lstm": train_lstm_full, "ridge": train_ridge_full}
 
     # Step 1 — evaluate on 30-day holdout to get honest metrics
     holdout: dict = {}
