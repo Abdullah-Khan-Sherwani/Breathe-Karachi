@@ -13,3 +13,9 @@ ACCURACY_AGENT_PROMPT.md
 CHANGES.md
 scripts/backup_feature_store.json
 data/
+backups/
+logs/
+.pytest_cache/
+analysisplots/
+analysistables/
+notebooks/

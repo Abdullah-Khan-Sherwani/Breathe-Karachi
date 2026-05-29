@@ -18,6 +18,7 @@ COLLECTION_MODEL_REGISTRY = "model_registry"
 COLLECTION_PREDICTIONS    = "predictions"
 COLLECTION_MODEL_LOGS     = "model_logs"
 COLLECTION_LIME           = "lime_explanations"
+COLLECTION_SHAP           = "shap_explanations"
 COLLECTION_HOURLY         = "hourly_feature_store"
 
 
