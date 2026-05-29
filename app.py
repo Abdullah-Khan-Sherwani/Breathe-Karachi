@@ -19,6 +19,7 @@ from config.db import (
     COLLECTION_MODEL_REGISTRY,
     COLLECTION_MODEL_LOGS,
     COLLECTION_LIME,
+    COLLECTION_SHAP,
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -80,7 +81,7 @@ def _season_from_row(row: pd.Series) -> str:
 def load_feature_store() -> pd.DataFrame:
     docs = list(
         get_collection(COLLECTION_FEATURE_STORE)
-        .find({"AQI": {"$exists": True}}, {"_id": 0})
+        .find({"AQI": {"$exists": True, "$ne": None}}, {"_id": 0})
     )
     if not docs:
         return pd.DataFrame()
@@ -126,6 +127,16 @@ def load_lime() -> pd.DataFrame | None:
     local = Path(__file__).parent / "lime_explanations" / "lime_explanation.csv"
     if local.exists():
         return pd.read_csv(local), "unknown"
+    return None, ""
+
+
+@st.cache_data(ttl=3600)
+def load_shap() -> tuple[pd.DataFrame | None, str]:
+    doc = get_collection(COLLECTION_SHAP).find_one(
+        {}, sort=[("created_at", -1)]
+    )
+    if doc and "explanation" in doc:
+        return pd.DataFrame(doc["explanation"]), doc.get("model_type", "lgbm")
     return None, ""
 
 
@@ -180,9 +191,10 @@ st.markdown("""
 
 df        = load_feature_store()
 pred_doc  = load_latest_prediction()
-logs_df   = load_model_logs()
+# logs_df = load_model_logs()   # disabled in production; re-enable locally
 lime_data = load_lime()
 lime_df, lime_model_type = lime_data if isinstance(lime_data, tuple) else (None, "")
+shap_df, shap_model_type = load_shap()
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -190,12 +202,12 @@ lime_df, lime_model_type = lime_data if isinstance(lime_data, tuple) else (None,
 st.markdown("# 🌬️ Breathe Karachi")
 st.caption("Air quality monitoring & 4-day forecasts · Karachi, Pakistan (24.86°N, 67.00°E)")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "📍 Live Snapshot",
     "📈 AQI Trends",
     "🔬 Pollution Breakdown",
     "💡 Insights",
-    "🗂️ Model Logs",
+    # "🗂️ Model Logs",   # disabled in production
 ])
 
 
@@ -292,8 +304,8 @@ with tab1:
         else:
             st.info("No forecast yet. Run `python src/predict.py` to generate one.")
 
-        # ── Today's Pollutants ───────────────────────────────────────────────
-        st.markdown("#### Today's Pollutants")
+        # ── Latest Observed Pollutants ───────────────────────────────────────
+        st.markdown(f"#### Latest Observed Pollutants ({latest['date'].strftime('%d %b %Y')})")
         poll_cols = st.columns(6)
         for i, (key, label) in enumerate(POLLUTANT_LABELS.items()):
             val = float(latest[key]) if key in latest.index and pd.notna(latest[key]) else None
@@ -464,9 +476,9 @@ with tab3:
 
     col_radar, col_pie = st.columns(2, gap="large")
 
-    # ── Radar: today's pollutants vs WHO 24h limits ──────────────────────────
+    # ── Radar: latest observed pollutants vs WHO 24h limits ─────────────────
     with col_radar:
-        st.markdown("#### Today vs WHO 24-Hour Limits")
+        st.markdown(f"#### {latest['date'].strftime('%d %b %Y')} vs WHO 24-Hour Limits")
         poll_keys   = list(WHO_24H.keys())
         poll_labels = [POLLUTANT_LABELS[k] for k in poll_keys]
         limits      = [WHO_24H[k] for k in poll_keys]
@@ -482,7 +494,7 @@ with tab3:
             r=pct_values + [pct_values[0]],
             theta=poll_labels + [poll_labels[0]],
             fill="toself",
-            name="Today",
+            name=latest['date'].strftime('%d %b %Y'),
             line_color="#5b9bd5",
             fillcolor="rgba(91,155,213,0.2)",
         ))
@@ -534,39 +546,6 @@ with tab3:
             )
             st.plotly_chart(fig_pie, use_container_width=True)
 
-    st.divider()
-
-    # ── LIME Explanation ─────────────────────────────────────────────────────
-    st.markdown("#### LIME Feature Importance (AQI t+1 prediction)")
-    if lime_df is not None and not lime_df.empty:
-        st.caption(f"Model: {lime_model_type} · Top features driving tomorrow's AQI forecast")
-        lime_plot = lime_df.copy()
-        lime_plot = lime_plot.sort_values("weight", ascending=True)
-        lime_plot["color"] = lime_plot["weight"].apply(
-            lambda w: "#e74c3c" if w < 0 else "#2ecc71"
-        )
-
-        fig_lime = go.Figure(go.Bar(
-            x=lime_plot["weight"],
-            y=lime_plot["feature"],
-            orientation="h",
-            marker_color=lime_plot["color"].tolist(),
-        ))
-        fig_lime.add_vline(x=0, line_width=1, line_color="rgba(255,255,255,0.3)")
-        fig_lime.update_layout(
-            xaxis_title="LIME weight (impact on predicted AQI t+1)",
-            yaxis_title=None,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#d0d0d0",
-            height=420,
-            margin=dict(t=20, b=40, l=20, r=20),
-        )
-        fig_lime.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.07)")
-        fig_lime.update_yaxes(showgrid=False)
-        st.plotly_chart(fig_lime, use_container_width=True)
-    else:
-        st.info("LIME explanation not yet generated. Run `python src/create_lime.py` to build it.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -739,95 +718,93 @@ with tab4:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB 5 — Model Logs
+# TAB 5 — Model Logs (disabled in production; re-enable locally)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-with tab5:
-    st.markdown("#### Training Run History")
-
-    active_models = load_active_models()
-    if active_models:
-        st.markdown("**Active models in registry:**")
-        active_cols = st.columns(min(len(active_models), 3))
-        for i, m in enumerate(active_models[:3]):
-            with active_cols[i]:
-                mtype     = m.get("model_type", "—")
-                rmse      = m.get("RMSE", None)
-                r2        = m.get("R2",   None)
-                ver       = m.get("version", "—")
-                rmse_str  = f"{rmse:.2f}" if rmse is not None else "—"
-                r2_str    = f"{r2:.3f}"   if r2   is not None else "—"
-                st.markdown(f"""<div class="stat-card">
-                    <div style="font-size:0.8rem;opacity:0.55">Active model</div>
-                    <div style="font-size:1.4rem;font-weight:700;text-transform:uppercase;
-                                letter-spacing:0.05em">{mtype}</div>
-                    <div style="font-size:0.8rem;opacity:0.7;margin-top:0.3rem">
-                        RMSE: {rmse_str} &nbsp;&middot;&nbsp; R&sup2;: {r2_str}</div>
-                    <div style="font-size:0.72rem;opacity:0.45;margin-top:0.2rem">{ver}</div>
-                </div>""", unsafe_allow_html=True)
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        for m in active_models[:2]:
-            horizon_rows = []
-            for d in range(1, 5):
-                if f"MAE_d{d}" in m:
-                    horizon_rows.append({
-                        "Horizon": f"Day {d} (t+{d})",
-                        "MAE": round(m[f"MAE_d{d}"], 2),
-                        "RMSE": round(m[f"RMSE_d{d}"], 2),
-                        "R²": round(m[f"R2_d{d}"], 3),
-                    })
-            if horizon_rows:
-                st.caption(f"Per-horizon metrics — {m.get('model_type','').upper()} v{m.get('version','')}")
-                st.dataframe(pd.DataFrame(horizon_rows), hide_index=True, use_container_width=True)
-
-    if logs_df.empty:
-        st.info("No training logs yet. Run `python src/train.py` first.")
-    else:
-        # Metric trend chart
-        success_logs = logs_df[logs_df.get("status", pd.Series(dtype=str)) == "success"].copy() \
-            if "status" in logs_df.columns else logs_df.copy()
-
-        if "timestamp" in success_logs.columns and "RMSE" in success_logs.columns:
-            success_logs["timestamp"] = pd.to_datetime(success_logs["timestamp"])
-            success_logs = success_logs.sort_values("timestamp")
-
-            fig_log = go.Figure()
-            model_types = success_logs["model_type"].unique() if "model_type" in success_logs.columns else []
-            colors_map  = {"ridge": "#5b9bd5", "lgbm": "#f5a623", "lstm": "#2ecc71"}
-            for mt in model_types:
-                sub = success_logs[success_logs["model_type"] == mt]
-                fig_log.add_trace(go.Scatter(
-                    x=sub["timestamp"], y=sub["RMSE"],
-                    mode="lines+markers",
-                    name=mt.upper(),
-                    line=dict(color=colors_map.get(mt, "#aaa"), width=2),
-                    marker=dict(size=7),
-                ))
-
-            fig_log.update_layout(
-                title="RMSE over Training Runs",
-                xaxis_title=None,
-                yaxis_title="RMSE",
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font_color="#d0d0d0",
-                height=300,
-                margin=dict(t=50, b=40, l=60, r=20),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
-            )
-            fig_log.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.07)")
-            fig_log.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.07)")
-            st.plotly_chart(fig_log, use_container_width=True)
-
-        # Log table
-        st.markdown("#### Run Details")
-        display_cols = [c for c in ["timestamp", "model_type", "status", "MAE", "RMSE", "R2", "error"]
-                        if c in logs_df.columns]
-        disp = logs_df[display_cols].copy()
-        if "timestamp" in disp.columns:
-            disp["timestamp"] = pd.to_datetime(disp["timestamp"]).dt.strftime("%Y-%m-%d %H:%M UTC")
-        for col in ["MAE", "RMSE", "R2"]:
-            if col in disp.columns:
-                disp[col] = disp[col].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "—")
-        st.dataframe(disp, use_container_width=True, height=400)
+# with tab5:
+#     st.markdown("#### Training Run History")
+#
+#     active_models = load_active_models()
+#     if active_models:
+#         st.markdown("**Active models in registry:**")
+#         active_cols = st.columns(min(len(active_models), 3))
+#         for i, m in enumerate(active_models[:3]):
+#             with active_cols[i]:
+#                 mtype     = m.get("model_type", "—")
+#                 rmse      = m.get("RMSE", None)
+#                 r2        = m.get("R2",   None)
+#                 ver       = m.get("version", "—")
+#                 rmse_str  = f"{rmse:.2f}" if rmse is not None else "—"
+#                 r2_str    = f"{r2:.3f}"   if r2   is not None else "—"
+#                 st.markdown(f"""<div class="stat-card">
+#                     <div style="font-size:0.8rem;opacity:0.55">Active model</div>
+#                     <div style="font-size:1.4rem;font-weight:700;text-transform:uppercase;
+#                                 letter-spacing:0.05em">{mtype}</div>
+#                     <div style="font-size:0.8rem;opacity:0.7;margin-top:0.3rem">
+#                         RMSE: {rmse_str} &nbsp;&middot;&nbsp; R&sup2;: {r2_str}</div>
+#                     <div style="font-size:0.72rem;opacity:0.45;margin-top:0.2rem">{ver}</div>
+#                 </div>""", unsafe_allow_html=True)
+#         st.markdown("<br>", unsafe_allow_html=True)
+#
+#         for m in active_models[:2]:
+#             horizon_rows = []
+#             for d in range(1, 5):
+#                 if f"MAE_d{d}" in m:
+#                     horizon_rows.append({
+#                         "Horizon": f"Day {d} (t+{d})",
+#                         "MAE": round(m[f"MAE_d{d}"], 2),
+#                         "RMSE": round(m[f"RMSE_d{d}"], 2),
+#                         "R²": round(m[f"R2_d{d}"], 3),
+#                     })
+#             if horizon_rows:
+#                 st.caption(f"Per-horizon metrics — {m.get('model_type','').upper()} v{m.get('version','')}")
+#                 st.dataframe(pd.DataFrame(horizon_rows), hide_index=True, use_container_width=True)
+#
+#     if logs_df.empty:
+#         st.info("No training logs yet. Run `python src/train.py` first.")
+#     else:
+#         success_logs = logs_df[logs_df.get("status", pd.Series(dtype=str)) == "success"].copy() \
+#             if "status" in logs_df.columns else logs_df.copy()
+#
+#         if "timestamp" in success_logs.columns and "RMSE" in success_logs.columns:
+#             success_logs["timestamp"] = pd.to_datetime(success_logs["timestamp"])
+#             success_logs = success_logs.sort_values("timestamp")
+#
+#             fig_log = go.Figure()
+#             model_types = success_logs["model_type"].unique() if "model_type" in success_logs.columns else []
+#             colors_map  = {"ridge": "#5b9bd5", "lgbm": "#f5a623", "lstm": "#2ecc71"}
+#             for mt in model_types:
+#                 sub = success_logs[success_logs["model_type"] == mt]
+#                 fig_log.add_trace(go.Scatter(
+#                     x=sub["timestamp"], y=sub["RMSE"],
+#                     mode="lines+markers",
+#                     name=mt.upper(),
+#                     line=dict(color=colors_map.get(mt, "#aaa"), width=2),
+#                     marker=dict(size=7),
+#                 ))
+#
+#             fig_log.update_layout(
+#                 title="RMSE over Training Runs",
+#                 xaxis_title=None,
+#                 yaxis_title="RMSE",
+#                 paper_bgcolor="rgba(0,0,0,0)",
+#                 plot_bgcolor="rgba(0,0,0,0)",
+#                 font_color="#d0d0d0",
+#                 height=300,
+#                 margin=dict(t=50, b=40, l=60, r=20),
+#                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
+#             )
+#             fig_log.update_xaxes(showgrid=True, gridcolor="rgba(255,255,255,0.07)")
+#             fig_log.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.07)")
+#             st.plotly_chart(fig_log, use_container_width=True)
+#
+#         st.markdown("#### Run Details")
+#         display_cols = [c for c in ["timestamp", "model_type", "status", "MAE", "RMSE", "R2", "error"]
+#                         if c in logs_df.columns]
+#         disp = logs_df[display_cols].copy()
+#         if "timestamp" in disp.columns:
+#             disp["timestamp"] = pd.to_datetime(disp["timestamp"]).dt.strftime("%Y-%m-%d %H:%M UTC")
+#         for col in ["MAE", "RMSE", "R2"]:
+#             if col in disp.columns:
+#                 disp[col] = disp[col].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "—")
+#         st.dataframe(disp, use_container_width=True, height=400)

@@ -34,3 +34,6 @@ jobs:
 
       - name: Generate LIME explanation
         run: python src/create_lime.py
+
+      - name: Generate SHAP explanation
+        run: python src/create_shap.py
