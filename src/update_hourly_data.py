@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
+import time
 import requests
 import pandas as pd
 from datetime import datetime, timedelta, timezone
@@ -9,8 +10,23 @@ from pymongo import ASCENDING
 from config.db import get_collection, COLLECTION_HOURLY
 
 LAT, LON, TIMEZONE = 24.8607, 67.0011, "Asia/Karachi"
-AIR_URL     = "https://air-quality-api.open-meteo.com/v1/air-quality"
+AIR_URL      = "https://air-quality-api.open-meteo.com/v1/air-quality"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+_FETCH_TIMEOUT   = 30
+_FETCH_MAX_TRIES = 3
+
+
+def _get_json(url: str, params: dict) -> dict:
+    for attempt in range(_FETCH_MAX_TRIES):
+        try:
+            resp = requests.get(url, params=params, timeout=_FETCH_TIMEOUT)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            if attempt == _FETCH_MAX_TRIES - 1:
+                raise
+            time.sleep(2 ** attempt)
 
 AIR_PARAMS     = "us_aqi,pm2_5,pm10,nitrogen_dioxide,sulphur_dioxide,carbon_monoxide,ozone"
 WEATHER_PARAMS = "temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,wind_direction_10m,apparent_temperature,surface_pressure,wind_gusts_10m"
@@ -49,25 +65,13 @@ def _fetch_hourly(start_date: str, end_date: str) -> pd.DataFrame | None:
     base = {"latitude": LAT, "longitude": LON, "timezone": TIMEZONE,
             "start_date": start_date, "end_date": end_date}
     try:
-        air_resp = requests.get(
-            AIR_URL,
-            params={**base, "hourly": AIR_PARAMS},
-            timeout=20,
-        )
-        air_resp.raise_for_status()
-        air = air_resp.json()["hourly"]
+        air = _get_json(AIR_URL, {**base, "hourly": AIR_PARAMS})["hourly"]
     except Exception as e:
         print(f"  air-quality API error ({start_date} to {end_date}): {e}")
         return None
 
     try:
-        wthr_resp = requests.get(
-            FORECAST_URL,
-            params={**base, "hourly": WEATHER_PARAMS},
-            timeout=20,
-        )
-        wthr_resp.raise_for_status()
-        wthr = wthr_resp.json()["hourly"]
+        wthr = _get_json(FORECAST_URL, {**base, "hourly": WEATHER_PARAMS})["hourly"]
     except Exception as e:
         print(f"  forecast API error ({start_date} to {end_date}): {e}")
         return None
