@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
+import time
 import numpy as np
 import pandas as pd
 import requests
@@ -84,6 +85,23 @@ _AQ_FORECAST_COL_MAP = {
     "uv_index": "uv_index",
 }
 LAT, LON, TIMEZONE = 24.8607, 67.0011, "Asia/Karachi"
+
+_FETCH_TIMEOUT   = 30   # seconds per attempt
+_FETCH_MAX_TRIES = 3    # total attempts before giving up
+
+
+def _get_json(url: str, params: dict) -> dict:
+    """GET with retry + exponential backoff. Raises on final failure."""
+    for attempt in range(_FETCH_MAX_TRIES):
+        try:
+            resp = requests.get(url, params=params, timeout=_FETCH_TIMEOUT)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            if attempt == _FETCH_MAX_TRIES - 1:
+                raise
+            time.sleep(2 ** attempt)   # 1 s, 2 s
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -490,15 +508,14 @@ def _fetch_daily_forecast() -> dict[str, dict]:
     average to daily. Returns {date_str: {col: value}} for forecast dates.
     """
     try:
-        resp = requests.get(
+        resp = _get_json(
             _FORECAST_URL,
             params={
                 "latitude": LAT, "longitude": LON, "timezone": TIMEZONE,
                 "hourly": _FORECAST_HOURLY,
                 "forecast_days": 5,
             },
-            timeout=15,
-        ).json()
+        )
         hourly = resp.get("hourly", {})
         df = pd.DataFrame(hourly)
         df["time"] = pd.to_datetime(df["time"])
@@ -518,15 +535,14 @@ def _fetch_daily_aq_forecast() -> dict[str, dict]:
     average to daily. Returns {date_str: {col: value}} for forecast dates.
     """
     try:
-        resp = requests.get(
+        resp = _get_json(
             _AQ_FORECAST_URL,
             params={
                 "latitude": LAT, "longitude": LON, "timezone": TIMEZONE,
                 "hourly": _AQ_FORECAST_HOURLY,
                 "forecast_days": 5,
             },
-            timeout=15,
-        ).json()
+        )
         hourly = resp.get("hourly", {})
         df = pd.DataFrame(hourly)
         df["time"] = pd.to_datetime(df["time"])
