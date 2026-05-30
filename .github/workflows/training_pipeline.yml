@@ -1,9 +1,7 @@
 name: Training Pipeline
 
 on:
-  schedule:
-    - cron: "0 22 * * *"    # 22:00 UTC = 03:00 PKT — after daily feature pipeline has settled
-  workflow_dispatch:
+  workflow_dispatch:  # triggered externally by cron-job.org daily at 1:20 AM PKT
 
 jobs:
   train-and-deploy:
