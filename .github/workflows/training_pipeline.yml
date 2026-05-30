@@ -2,7 +2,7 @@ name: Training Pipeline
 
 on:
   schedule:
-    - cron: "30 19 * * *"   # 19:30 UTC = 00:30 PKT (12:30 AM Karachi)
+    - cron: "0 22 * * *"    # 22:00 UTC = 03:00 PKT — after daily feature pipeline has settled
   workflow_dispatch:
 
 jobs:
