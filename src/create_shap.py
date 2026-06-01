@@ -5,10 +5,14 @@ NNLS ensemble. Results are persisted to MongoDB so the dashboard can load them.
 Explainer strategy:
   LGBM  → shap.TreeExplainer     (exact, fast; one explainer per horizon)
   Ridge → shap.LinearExplainer   (exact, fast; one explainer per horizon)
-  LSTM  → shap.KernelExplainer   (model-agnostic; GradientExplainer is broken on
-                                  Keras 3 / TF 2.17 — learning_phase was removed.
-                                  A row is tiled across the 7-day window, matching
-                                  the LSTM treatment in create_lime.py.)
+  LSTM  → Expected Gradients (GradientSHAP), implemented natively with
+                                  tf.GradientTape. shap's GradientExplainer/
+                                  DeepExplainer rely on the removed
+                                  tf.keras.backend.learning_phase and are broken
+                                  on Keras 3 / TF 2.17. Expected Gradients is the
+                                  same Shapley-consistent estimand GradientExplainer
+                                  targets: it attributes over the real SEQ_LEN-day
+                                  window against baselines sampled from the data.
   Ensemble → weighted sum of component SHAP values (valid: SHAP is linear for Σ wᵢfᵢ)
 """
 
@@ -31,10 +35,10 @@ from config.db import (
 TOP_FEATURES = 15
 SEQ_LEN = 7
 
-# LSTM KernelExplainer budget (model-agnostic, so kept bounded for runtime)
-LSTM_BACKGROUND_K = 8     # k-means summary rows used as the SHAP background
-LSTM_EXPLAIN_N    = 10    # most-recent rows to explain
-LSTM_NSAMPLES     = 300   # coalitions sampled per explained instance
+# LSTM Expected-Gradients budget
+LSTM_EG_BASELINES = 20    # reference windows sampled from the data per instance
+LSTM_EG_STEPS     = 20    # interpolation steps along each baseline->input path
+LSTM_EXPLAIN_N    = 10    # most-recent windows to explain
 
 
 def _load_feature_store(feat_cols: list) -> pd.DataFrame:
@@ -85,37 +89,56 @@ def _shap_ridge(model, scaler, feat_cols: list, df_vals: np.ndarray) -> np.ndarr
 
 def _shap_lstm(model, scaler, feat_cols: list, df_vals: np.ndarray) -> np.ndarray:
     """
-    KernelExplainer on the Keras LSTM (GradientExplainer is broken on Keras 3).
-    Each tabular row is tiled across the SEQ_LEN window before prediction — the
-    same single-row approximation create_lime.py uses for the LSTM. SHAP is
-    computed per horizon (in original AQI units) and averaged across horizons.
+    Expected Gradients (GradientSHAP) for the Keras LSTM — a Shapley-consistent
+    attribution computed natively with tf.GradientTape (shap's deep explainers
+    are broken on Keras 3 / TF 2.17). For each explained window we integrate the
+    model gradient along straight-line paths from baselines sampled out of the
+    data, average over baselines, sum the per-(timestep, feature) attributions
+    over the SEQ_LEN window to a per-feature value, and average |attribution|
+    across the 4 horizons. Operates in the scaled feature space.
     """
-    import shap
+    import tensorflow as tf
     x_sc, y_sc = scaler if isinstance(scaler, tuple) else (scaler, None)
 
-    X_sc = x_sc.transform(df_vals)          # (n, n_features), scaled tabular space
-    n = len(X_sc)
-    if n < 2:
-        raise ValueError("Too few rows for LSTM SHAP.")
+    X_sc = x_sc.transform(df_vals).astype("float32")            # (n, n_features)
+    seqs = np.array(
+        [X_sc[i:i + SEQ_LEN] for i in range(len(X_sc) - SEQ_LEN + 1)],
+        dtype="float32",
+    )                                                           # (n_seq, SEQ_LEN, F)
+    if len(seqs) < 2:
+        raise ValueError("Too few rows to build LSTM sequences.")
 
-    background  = shap.kmeans(X_sc, min(LSTM_BACKGROUND_K, n))
-    explain_set = X_sc[-min(LSTM_EXPLAIN_N, n):]
+    F = len(feat_cols)
+    rng = np.random.default_rng(42)
+    n_base  = min(LSTM_EG_BASELINES, len(seqs))
+    explain = seqs[-min(LSTM_EXPLAIN_N, len(seqs)):]
+    alphas  = np.linspace(0.0, 1.0, LSTM_EG_STEPS + 1, dtype="float32")
 
-    def _make_predict_h(h: int):
-        def f(rows: np.ndarray) -> np.ndarray:
-            # rows: (M, n_features) scaled → tile each into a (SEQ_LEN, n_features) window
-            seqs = np.repeat(rows[:, None, :], SEQ_LEN, axis=1)
-            pred_sc = model.predict(seqs, verbose=0)        # (M, 4) scaled targets
-            pred = y_sc.inverse_transform(pred_sc) if y_sc is not None else pred_sc
-            return pred[:, h]
-        return f
+    def _grad_h(inp: np.ndarray, h: int) -> np.ndarray:
+        x = tf.convert_to_tensor(inp)
+        with tf.GradientTape() as tape:
+            tape.watch(x)
+            out = model(x, training=False)[:, h]
+        return tape.gradient(out, x).numpy()
 
     per_horizon = []
     for h in range(4):
-        explainer = shap.KernelExplainer(_make_predict_h(h), background)
-        sv = explainer.shap_values(explain_set, nsamples=LSTM_NSAMPLES, silent=True)
-        per_horizon.append(np.abs(sv).mean(axis=0))         # (n_features,)
-    return np.mean(per_horizon, axis=0)                     # (n_features,)
+        feat_attr = np.zeros(F)
+        for x in explain:                                       # x: (SEQ_LEN, F)
+            base = seqs[rng.choice(len(seqs), size=n_base, replace=False)]   # (B, SEQ, F)
+            diff = x[None] - base                                            # (B, SEQ, F)
+            # interpolate each baseline->x path: (B, STEPS+1, SEQ, F)
+            interp = base[:, None] + alphas[None, :, None, None] * diff[:, None]
+            grads = _grad_h(interp.reshape(-1, SEQ_LEN, F), h).reshape(
+                n_base, LSTM_EG_STEPS + 1, SEQ_LEN, F)
+            avg_grads = ((grads[:, :-1] + grads[:, 1:]) / 2.0).mean(axis=1)   # trapezoid -> (B, SEQ, F)
+            ig = (diff * avg_grads).mean(axis=0)                             # avg baselines -> (SEQ, F)
+            feat_attr += np.abs(ig.sum(axis=0))                             # sum over timesteps -> (F,)
+        # Convert from scaled-output to original AQI units so the LSTM is
+        # commensurate with the LGBM/Ridge SHAP in the ensemble combination.
+        scale_h = float(y_sc.scale_[h]) if y_sc is not None else 1.0
+        per_horizon.append((feat_attr / len(explain)) * scale_h)
+    return np.mean(per_horizon, axis=0)                         # (n_features,)
 
 
 _SHAP_FN = {
