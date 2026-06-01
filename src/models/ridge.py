@@ -39,7 +39,7 @@ def _compute_metrics(y_true, y_pred) -> dict:
     mae  = float(mean_absolute_error(y_true, y_pred))
     rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
     r2   = float(r2_score(y_true, y_pred))
-    metrics = {"MAE": mae, "RMSE": rmse, "R2": r2}
+    metrics = {"MAE": mae, "RMSE": rmse, "R2": r2, "_preds": y_pred.tolist()}
     for i in range(y_true.shape[1]):
         h = i + 1
         metrics[f"MAE_d{h}"]  = float(mean_absolute_error(y_true[:, i], y_pred[:, i]))

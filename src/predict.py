@@ -18,17 +18,10 @@ from config.db import (
     load_model,
     COLLECTION_FEATURE_STORE,
     COLLECTION_PREDICTIONS,
+    COLLECTION_ENSEMBLE,
 )
 
 SEQ_LEN = 7
-
-# Per-horizon blend weights [lgbm, lstm] — derived from holdout analysis
-_ENSEMBLE_WEIGHTS = [
-    (0.60, 0.40),   # day 1: LGBM dominates
-    (0.15, 0.85),   # day 2: LSTM dominates
-    (0.00, 1.00),   # day 3: LSTM only
-    (0.00, 1.00),   # day 4: LSTM only
-]
 
 
 def _load_feature_store(n_rows: int) -> pd.DataFrame:
@@ -94,54 +87,51 @@ def run() -> None:
         print(f"[predict] WARNING: Feature store is {staleness_days} days stale — "
               f"predictions anchored to {last_date}, not today.")
 
-    lgbm_result = _try_load("lgbm")
-    lstm_result = _try_load("lstm")
+    # Load ensemble weights from MongoDB (computed during training via nnls)
+    ens_doc = get_collection(COLLECTION_ENSEMBLE).find_one({})
+    if ens_doc is None:
+        raise ValueError("No ensemble_config found — run train.py first to compute weights.")
+    ens_order   = ens_doc["order"]                        # e.g. ["lgbm", "lstm", "ridge"]
+    ens_weights = [np.array(w) for w in ens_doc["weights"]]  # list of 4 weight vectors
 
-    if lgbm_result is None and lstm_result is None:
-        raise ValueError("No active lgbm or lstm model found in model_registry.")
+    _PREDICT_FN = {
+        "lgbm":  _predict_tabular,
+        "ridge": _predict_tabular,
+        "lstm":  _predict_lstm,
+    }
 
-    preds_lgbm: np.ndarray | None = None
-    preds_lstm: np.ndarray | None = None
+    component_preds: dict[str, np.ndarray] = {}
     component_models: dict = {}
+    for model_type in ens_order:
+        result = _try_load(model_type)
+        if result is None:
+            print(f"[predict] {model_type.upper()} not found — skipping.")
+            continue
+        model, scaler, meta = result
+        print(f"[predict] Loaded {model_type.upper()}  id={meta['_id']}  trained_at={meta.get('trained_at','?')}")
+        component_preds[model_type] = _PREDICT_FN[model_type](model, scaler, meta["features"], df)
+        component_models[model_type] = meta["_id"]
 
-    if lgbm_result is not None:
-        lgbm_model, lgbm_scaler, lgbm_meta = lgbm_result
-        trained_at = lgbm_meta.get("trained_at", "unknown")
-        print(f"[predict] Loaded LGBM  id={lgbm_meta['_id']}  trained_at={trained_at}")
-        preds_lgbm = _predict_tabular(lgbm_model, lgbm_scaler, lgbm_meta["features"], df)
-        component_models["lgbm"] = lgbm_meta["_id"]
-    else:
-        print("[predict] LGBM model not found — ensemble will use LSTM only.")
+    if not component_preds:
+        raise ValueError("No models loaded — cannot predict.")
 
-    if lstm_result is not None:
-        lstm_model, lstm_scaler, lstm_meta = lstm_result
-        trained_at = lstm_meta.get("trained_at", "unknown")
-        print(f"[predict] Loaded LSTM  id={lstm_meta['_id']}  trained_at={trained_at}")
-        preds_lstm = _predict_lstm(lstm_model, lstm_scaler, lstm_meta["features"], df)
-        component_models["lstm"] = lstm_meta["_id"]
-    else:
-        print("[predict] LSTM model not found — ensemble will use LGBM only.")
-
+    # Blend using per-horizon nnls weights; fall back to equal weight for missing models
     predictions = np.zeros(4)
-    for d, (w_lgbm, w_lstm) in enumerate(_ENSEMBLE_WEIGHTS):
-        if preds_lgbm is not None and preds_lstm is not None:
-            predictions[d] = w_lgbm * preds_lgbm[d] + w_lstm * preds_lstm[d]
-        elif preds_lgbm is not None:
-            predictions[d] = preds_lgbm[d]
-        else:
-            predictions[d] = preds_lstm[d]
+    for h in range(4):
+        available = [m for m in ens_order if m in component_preds]
+        w = np.array([ens_weights[h][ens_order.index(m)] for m in available])
+        w = w / w.sum()
+        predictions[h] = sum(w[i] * component_preds[m][h] for i, m in enumerate(available))
 
     print()
-    print("[predict] Forecast dates and predicted AQI:")
-    print(f"  {'Date':<12}  {'LGBM':>7}  {'LSTM':>7}  {'Weights (L/G)':>14}  {'Ensemble':>9}")
+    print(f"[predict] Ensemble order: {ens_order}")
+    print(f"  {'Date':<12}  " + "  ".join(f"{m.upper():>7}" for m in ens_order) + f"  {'Ensemble':>9}")
     forecasts = []
     for i in range(4):
         fdate = (last_date + timedelta(days=i + 1)).isoformat()
-        w_lgbm, w_lstm = _ENSEMBLE_WEIGHTS[i]
-        lgbm_val = f"{preds_lgbm[i]:.1f}" if preds_lgbm is not None else "  n/a"
-        lstm_val = f"{preds_lstm[i]:.1f}" if preds_lstm is not None else "  n/a"
-        print(f"  {fdate:<12}  {lgbm_val:>7}  {lstm_val:>7}  "
-              f"{w_lgbm:.2f}/{w_lstm:.2f}{'':>5}  {predictions[i]:>9.1f}")
+        vals  = "  ".join(f"{component_preds[m][i]:>7.1f}" if m in component_preds else f"{'n/a':>7}" for m in ens_order)
+        w_str = "/".join(f"{ens_weights[i][j]:.2f}" for j in range(len(ens_order)))
+        print(f"  {fdate:<12}  {vals}  {predictions[i]:>9.1f}  w=[{w_str}]")
         forecasts.append({"date": fdate, "predicted_AQI": float(predictions[i])})
 
     doc = {

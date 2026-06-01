@@ -142,7 +142,7 @@ def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
     r2   = float(r2_score(y_true, y_pred))
 
-    metrics: dict = {"MAE": mae, "RMSE": rmse, "R2": r2}
+    metrics: dict = {"MAE": mae, "RMSE": rmse, "R2": r2, "_preds": y_pred.tolist()}
 
     for i in range(y_pred.shape[1]):
         y_h    = y_true[:, i]

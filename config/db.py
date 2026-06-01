@@ -20,6 +20,7 @@ COLLECTION_MODEL_LOGS     = "model_logs"
 COLLECTION_LIME           = "lime_explanations"
 COLLECTION_SHAP           = "shap_explanations"
 COLLECTION_HOURLY         = "hourly_feature_store"
+COLLECTION_ENSEMBLE       = "ensemble_config"
 
 
 def get_client():

@@ -69,7 +69,7 @@ def _compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, per_horizon_preds: 
     avg_rmse = float(np.sqrt(mean_squared_error(y_true, y_pred)))
     avg_r2   = float(r2_score(y_true, y_pred))
 
-    metrics: dict = {"MAE": avg_mae, "RMSE": avg_rmse, "R2": avg_r2}
+    metrics: dict = {"MAE": avg_mae, "RMSE": avg_rmse, "R2": avg_r2, "_preds": y_pred.tolist()}
 
     for i, preds_h in enumerate(per_horizon_preds, start=1):
         y_h = y_true[:, i - 1]

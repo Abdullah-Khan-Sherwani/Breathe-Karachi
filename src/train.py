@@ -1,7 +1,7 @@
 """
 Training orchestrator — loads feature_store, time-aware split (last 30 days = test),
-trains Ridge + LightGBM + LSTM, saves all to model_registry with holdout metrics,
-and logs all runs to model_logs. Ensemble in predict.py uses only lgbm + lstm.
+trains Ridge + LightGBM + LSTM, computes nnls ensemble weights, saves all to
+model_registry, and logs runs to model_logs.
 """
 
 import sys
@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import nnls
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from config.db import (
     get_collection,
@@ -20,6 +22,7 @@ from config.db import (
     purge_old_models,
     COLLECTION_FEATURE_STORE,
     COLLECTION_MODEL_LOGS,
+    COLLECTION_ENSEMBLE,
 )
 from src.models import train_ridge, train_ridge_full, train_lgbm, train_lgbm_full, train_lstm, train_lstm_full
 
@@ -35,7 +38,7 @@ EXCLUDE_COLS = {
     "apparent_temp_lag_1", "apparent_temp_roll_mean_7",
     "wind_gusts", "wind_gusts_t1", "wind_gusts_t2", "wind_gusts_t3", "wind_gusts_t4",
     "wind_gusts_lag_1", "wind_gusts_roll_mean_7",
-    # Sparse variables: null in ERA5 archive, forecast-only — excluded (all-NaN for historical rows)
+    # Sparse variables: null in ERA5 archive, forecast-only
     "visibility", "visibility_t1", "visibility_t2", "visibility_t3", "visibility_t4",
     "visibility_lag_1", "visibility_roll_mean_7",
     "wind_speed_80m", "wind_speed_80m_t1", "wind_speed_80m_t2", "wind_speed_80m_t3", "wind_speed_80m_t4",
@@ -61,7 +64,6 @@ def load_data() -> pd.DataFrame:
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").reset_index(drop=True)
     df = df.dropna(subset=TARGET_COLS)
-    # Rows before 2023 have weather but sparse/unreliable AQI
     df = df[df["date"] >= pd.Timestamp("2023-01-01")]
     return df
 
@@ -84,18 +86,22 @@ def _log(col, model_type: str, status: str, metrics: dict, model_id=None):
         "model_type": model_type,
         "model_id":   str(model_id) if model_id else None,
     }
-    # Always include base metrics; include per-horizon keys when present
     for key in ("MAE", "RMSE", "R2", "error", *_PER_HORIZON_KEYS):
         if key in metrics:
             doc[key] = metrics[key]
     col.insert_one(doc)
 
 
+def _nnls_weights(A: np.ndarray, y: np.ndarray, n_models: int) -> np.ndarray:
+    w, _ = nnls(A, y)
+    return w / w.sum() if w.sum() > 0 else np.ones(n_models) / n_models
+
+
 def run() -> None:
     df   = load_data()
     feat = get_feature_cols(df)
 
-    train, test = time_split(df)
+    train, test = time_split(df, test_days=60)
     if len(test) == 0:
         raise RuntimeError("Test split is empty — need at least 30 days of data.")
 
@@ -111,12 +117,14 @@ def run() -> None:
     eval_trainers = [("lgbm", train_lgbm), ("lstm", train_lstm), ("ridge", train_ridge)]
     full_trainers = {"lgbm": train_lgbm_full, "lstm": train_lstm_full, "ridge": train_ridge_full}
 
-    # Step 1 — evaluate on 30-day holdout to get honest metrics
+    # Step 1 — evaluate each model on 30-day holdout
     holdout: dict = {}
+    holdout_preds: dict = {}
     for model_type, trainer in eval_trainers:
         print(f"\nEvaluating {model_type} on holdout...")
         try:
             _, _, metrics, hparams = trainer(X_tr, y_tr, X_te, y_te)
+            holdout_preds[model_type] = np.array(metrics.pop("_preds"))
             holdout[model_type] = (metrics, hparams)
             print(f"  {model_type}: MAE={metrics['MAE']:.2f}  RMSE={metrics['RMSE']:.2f}  R²={metrics['R2']:.3f}")
             for h in range(1, 5):
@@ -125,7 +133,51 @@ def run() -> None:
         except Exception as exc:
             print(f"  {model_type} eval FAILED: {exc}")
 
-    # Step 2 — retrain on full labeled data; save with holdout metrics
+    # Step 2 — compute ensemble weights and evaluate cleanly
+    order = [m for m in ("lgbm", "lstm", "ridge") if m in holdout_preds]
+    if len(order) >= 2:
+        n_te = y_te.shape[0]
+        half = 30
+
+        # Fit weights on first half of holdout, evaluate on second half (no leakage)
+        val_preds = np.zeros((n_te - half, len(TARGET_COLS)))
+        for h in range(len(TARGET_COLS)):
+            A = np.column_stack([holdout_preds[m][:, h] for m in order])
+            w = _nnls_weights(A[:half], y_te[:half, h], len(order))
+            val_preds[:, h] = A[half:] @ w
+
+        ens_metrics = {
+            "MAE":  float(mean_absolute_error(y_te[half:], val_preds)),
+            "RMSE": float(np.sqrt(mean_squared_error(y_te[half:], val_preds))),
+            "R2":   float(r2_score(y_te[half:], val_preds)),
+        }
+        for h in range(len(TARGET_COLS)):
+            ens_metrics[f"MAE_d{h+1}"]  = float(mean_absolute_error(y_te[half:, h], val_preds[:, h]))
+            ens_metrics[f"RMSE_d{h+1}"] = float(np.sqrt(mean_squared_error(y_te[half:, h], val_preds[:, h])))
+            ens_metrics[f"R2_d{h+1}"]   = float(r2_score(y_te[half:, h], val_preds[:, h]))
+
+        # Refit weights on full holdout for deployment
+        weights = []
+        for h in range(len(TARGET_COLS)):
+            A = np.column_stack([holdout_preds[m][:, h] for m in order])
+            weights.append(_nnls_weights(A, y_te[:, h], len(order)).tolist())
+
+        get_collection(COLLECTION_ENSEMBLE).replace_one(
+            {},
+            {"order": order, "weights": weights, "metrics": ens_metrics, "updated_at": datetime.now(timezone.utc)},
+            upsert=True,
+        )
+        _log(logs_col, "ensemble", "success", ens_metrics)
+
+        print(f"\nEnsemble weights (order={order}):")
+        for h, w in enumerate(weights, 1):
+            print(f"  d{h}: {dict(zip(order, [f'{x:.2f}' for x in w]))}")
+        print(f"\nEnsemble metrics (second-half holdout):")
+        print(f"  Overall: MAE={ens_metrics['MAE']:.2f}  RMSE={ens_metrics['RMSE']:.2f}  R²={ens_metrics['R2']:.3f}")
+        for h in range(1, 5):
+            print(f"  d{h}: MAE={ens_metrics[f'MAE_d{h}']:.2f}  RMSE={ens_metrics[f'RMSE_d{h}']:.2f}  R²={ens_metrics[f'R2_d{h}']:.3f}")
+
+    # Step 3 — retrain on full labeled data; save with holdout metrics
     results = []
     for model_type, full_trainer in full_trainers.items():
         if model_type not in holdout:
