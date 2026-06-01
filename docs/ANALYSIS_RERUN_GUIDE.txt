@@ -1,0 +1,91 @@
+==============================================================================
+ ANALYSIS RERUN GUIDE  —  archive/analysis/
+==============================================================================
+The scripts in archive/analysis/ were the deep one-off exploration behind the
+project (see archive/analysis/FINDINGS.md). They are NOT part of the automated
+pipeline. This note records which are worth re-running as the data grows, and
+which have already served their purpose.
+
+The day-to-day EDA now lives in  notebooks/eda.ipynb  (data-driven, re-runnable).
+SHAP for the live models now lives in  src/create_shap.py  (in the daily pipeline).
+
+------------------------------------------------------------------------------
+HOW TO RUN  (paths moved when these were archived — run them like this)
+------------------------------------------------------------------------------
+The scripts use sys.path.append('.') and write to analysis/plots|tables/, which
+assumes the old repo-root layout. Run them from inside archive/ with the repo
+root on PYTHONPATH:
+
+    cd <repo>/archive
+    PYTHONPATH=<repo> python analysis/<script>.py
+
+  - MongoDB credentials are read automatically from <repo>/.env
+  - Outputs are written to  archive/analysis/plots/  and  archive/analysis/tables/
+  - Scripts that load a model need a trained ACTIVE lgbm in the registry first
+    (run  python src/train.py  before them).
+
+------------------------------------------------------------------------------
+A.  SUPERSEDED  —  normally no need to rerun
+------------------------------------------------------------------------------
+Covered by notebooks/eda.ipynb (rebuilds itself from current MongoDB data):
+    eda_acf.py            ACF/PACF (daily)        -> notebook section 7
+    eda_correlations.py   feature/AQI correlation -> notebook section 11
+    eda_distributions.py  distributions by season -> notebook sections 4,10
+    eda_missing_decomp.py missingness + decompose -> notebook sections 3,8
+    eda_seasonal.py       month/season patterns   -> notebook section 9
+
+Covered by src/create_shap.py (multi-model + ensemble SHAP, runs daily):
+    shap_daily.py         per-horizon LGBM SHAP   -> create_shap.py (lgbm path)
+
+Re-run these standalone ONLY if you specifically want the static PNG/CSV
+artifacts in archive/analysis/ regenerated.
+
+------------------------------------------------------------------------------
+B.  ONE-TIME EXPERIMENTS  —  conclusion already baked into the code, DO NOT rerun
+------------------------------------------------------------------------------
+    stacking_experiment.py
+        Conclusion: prediction stacking hurts (day3 R2 0.152 -> -0.013).
+        Code reflects this: src/train.py uses independent per-horizon models +
+        an NNLS ensemble, NOT stacking.
+
+    feature_experiments.py
+        Conclusion: which engineered features help each horizon.
+        Code reflects this: the feature set and EXCLUDE_COLS in src/train.py.
+
+    fetch_new_variables.py
+        One-time Open-Meteo API scan (hits the network, 2023-2024 range).
+        Conclusion: which extra weather vars are useful. The chosen ones are
+        already fetched by src/fetch_data.py. No reason to rerun unless scouting
+        brand-new variables.
+
+------------------------------------------------------------------------------
+C.  WORTH RE-RUNNING AFTER A MODEL RETRAIN  (depend on the active lgbm model)
+------------------------------------------------------------------------------
+These give fresh diagnostics for whatever model is currently active. Re-run
+after a meaningful retrain or when writing up results:
+
+    error_analysis.py        residual bias + serial correlation per horizon
+                             (the day3 residual ACF finding lives here)
+    permutation_importance.py model-agnostic importance for day3
+    shap_interactions.py     SHAP interaction values for day3 (not in pipeline)
+    lime_analysis.py         multi-instance LIME study
+                             (the live pipeline already runs single-instance
+                              LIME via src/create_lime.py)
+
+------------------------------------------------------------------------------
+D.  NEEDS THE HOURLY DATASET  (data/hourly_features.csv)  —  niche
+------------------------------------------------------------------------------
+    shap_hourly.py           SHAP on hourly model
+    (also the hourly halves of eda_acf.py and eda_seasonal.py)
+
+    Conclusion is already known: predicting 3-day daily means from hourly inputs
+    is not viable (hourly day3 R2 ~ -0.02). Only rerun if revisiting the hourly
+    approach, and only after regenerating data/hourly_features.csv.
+
+==============================================================================
+QUICK PICK
+  - Refresh EDA after new data ............ run notebooks/eda.ipynb
+  - Refresh live SHAP ..................... run src/create_shap.py
+  - Post-retrain diagnostics ............. C: error_analysis, permutation_importance
+  - Everything else here ................. historical; keep for the report
+==============================================================================

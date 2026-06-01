@@ -1,7 +1,15 @@
 """
-SHAP explainability — computes mean |SHAP| values across all 4 forecast horizons
-for the most recent prediction using the latest active LGBM model. Results are
-persisted to MongoDB so the dashboard can load them without local files.
+SHAP explainability — computes mean |SHAP| values for all active models and their
+NNLS ensemble. Results are persisted to MongoDB so the dashboard can load them.
+
+Explainer strategy:
+  LGBM  → shap.TreeExplainer     (exact, fast; one explainer per horizon)
+  Ridge → shap.LinearExplainer   (exact, fast; one explainer per horizon)
+  LSTM  → shap.KernelExplainer   (model-agnostic; GradientExplainer is broken on
+                                  Keras 3 / TF 2.17 — learning_phase was removed.
+                                  A row is tiled across the 7-day window, matching
+                                  the LSTM treatment in create_lime.py.)
+  Ensemble → weighted sum of component SHAP values (valid: SHAP is linear for Σ wᵢfᵢ)
 """
 
 import sys
@@ -16,21 +24,17 @@ from config.db import (
     get_collection,
     load_model,
     COLLECTION_FEATURE_STORE,
-    COLLECTION_MODEL_REGISTRY,
     COLLECTION_SHAP,
+    COLLECTION_ENSEMBLE,
 )
 
 TOP_FEATURES = 15
+SEQ_LEN = 7
 
-
-def _latest_active_lgbm_type() -> str:
-    doc = get_collection(COLLECTION_MODEL_REGISTRY).find_one(
-        {"model_type": "lgbm", "status": "active"},
-        sort=[("trained_at", -1)],
-    )
-    if doc is None:
-        raise ValueError("No active lgbm model found in model_registry.")
-    return doc["model_type"]
+# LSTM KernelExplainer budget (model-agnostic, so kept bounded for runtime)
+LSTM_BACKGROUND_K = 8     # k-means summary rows used as the SHAP background
+LSTM_EXPLAIN_N    = 10    # most-recent rows to explain
+LSTM_NSAMPLES     = 300   # coalitions sampled per explained instance
 
 
 def _load_feature_store(feat_cols: list) -> pd.DataFrame:
@@ -46,48 +50,191 @@ def _load_feature_store(feat_cols: list) -> pd.DataFrame:
     return df[feat_cols].dropna()
 
 
-def run() -> None:
+def _try_load(model_type: str):
+    try:
+        return load_model(model_type)
+    except Exception:
+        return None
+
+
+def _shap_lgbm(model, scaler, feat_cols: list, df_vals: np.ndarray) -> np.ndarray:
+    """TreeExplainer on each of the 4 per-horizon LGBMRegressors; average mean|SHAP|."""
     import shap
-
-    model_type = _latest_active_lgbm_type()
-    model, scaler, metadata = load_model(model_type)
-    feat_cols = metadata["features"]
-
-    df = _load_feature_store(feat_cols)
-    if df.empty:
-        raise RuntimeError("feature_store has no processable rows.")
-
-    X = df.values.astype(float)
-    X_sc = scaler.transform(X)
-    X_sc_df = pd.DataFrame(X_sc, columns=feat_cols)
-
-    # model.models is a list of 4 LGBMRegressors (one per horizon)
-    horizon_shap_values = []
+    X_sc = scaler.transform(df_vals)
+    X_df = pd.DataFrame(X_sc, columns=feat_cols)
+    per_horizon = []
     for lgbm in model.models:
         explainer = shap.TreeExplainer(lgbm)
-        sv = explainer.shap_values(X_sc_df)  # shape (n_rows, n_features)
-        horizon_shap_values.append(np.abs(sv))
+        sv = explainer.shap_values(X_df)    # (n, n_features)
+        per_horizon.append(np.abs(sv).mean(axis=0))
+    return np.mean(per_horizon, axis=0)     # (n_features,)
 
-    # Average mean |SHAP| across all 4 horizons, computed on the whole background set
-    mean_abs_shap = np.mean([sv.mean(axis=0) for sv in horizon_shap_values], axis=0)
 
-    importance = pd.DataFrame({"feature": feat_cols, "importance": mean_abs_shap})
-    importance = importance.sort_values("importance", ascending=False).head(TOP_FEATURES)
+def _shap_ridge(model, scaler, feat_cols: list, df_vals: np.ndarray) -> np.ndarray:
+    """LinearExplainer on each of the 4 Ridge estimators in MultiOutputRegressor."""
+    import shap
+    X_sc = scaler.transform(df_vals)
+    X_df = pd.DataFrame(X_sc, columns=feat_cols)
+    per_horizon = []
+    for ridge in model.estimators_:         # one Ridge per horizon
+        explainer = shap.LinearExplainer(ridge, X_df)
+        sv = explainer.shap_values(X_df)    # (n, n_features)
+        per_horizon.append(np.abs(sv).mean(axis=0))
+    return np.mean(per_horizon, axis=0)     # (n_features,)
 
-    exp_list = [
-        {"feature": row["feature"], "importance": float(row["importance"])}
-        for _, row in importance.iterrows()
-    ]
 
+def _shap_lstm(model, scaler, feat_cols: list, df_vals: np.ndarray) -> np.ndarray:
+    """
+    KernelExplainer on the Keras LSTM (GradientExplainer is broken on Keras 3).
+    Each tabular row is tiled across the SEQ_LEN window before prediction — the
+    same single-row approximation create_lime.py uses for the LSTM. SHAP is
+    computed per horizon (in original AQI units) and averaged across horizons.
+    """
+    import shap
+    x_sc, y_sc = scaler if isinstance(scaler, tuple) else (scaler, None)
+
+    X_sc = x_sc.transform(df_vals)          # (n, n_features), scaled tabular space
+    n = len(X_sc)
+    if n < 2:
+        raise ValueError("Too few rows for LSTM SHAP.")
+
+    background  = shap.kmeans(X_sc, min(LSTM_BACKGROUND_K, n))
+    explain_set = X_sc[-min(LSTM_EXPLAIN_N, n):]
+
+    def _make_predict_h(h: int):
+        def f(rows: np.ndarray) -> np.ndarray:
+            # rows: (M, n_features) scaled → tile each into a (SEQ_LEN, n_features) window
+            seqs = np.repeat(rows[:, None, :], SEQ_LEN, axis=1)
+            pred_sc = model.predict(seqs, verbose=0)        # (M, 4) scaled targets
+            pred = y_sc.inverse_transform(pred_sc) if y_sc is not None else pred_sc
+            return pred[:, h]
+        return f
+
+    per_horizon = []
+    for h in range(4):
+        explainer = shap.KernelExplainer(_make_predict_h(h), background)
+        sv = explainer.shap_values(explain_set, nsamples=LSTM_NSAMPLES, silent=True)
+        per_horizon.append(np.abs(sv).mean(axis=0))         # (n_features,)
+    return np.mean(per_horizon, axis=0)                     # (n_features,)
+
+
+_SHAP_FN = {
+    "lgbm":  _shap_lgbm,
+    "ridge": _shap_ridge,
+    "lstm":  _shap_lstm,
+}
+
+
+def run() -> None:
+    import shap  # noqa: F401 — ensures shap is importable before any work starts
+
+    # ── Load ensemble weights ──────────────────────────────────────────────────
+    ens_doc     = get_collection(COLLECTION_ENSEMBLE).find_one({})
+    ens_order   = ens_doc["order"]   if ens_doc else []
+    ens_weights = ens_doc["weights"] if ens_doc else []  # list of 4 weight vectors
+
+    # ── Load models ────────────────────────────────────────────────────────────
+    loaded: dict = {}
+    for mt in ["lgbm", "ridge", "lstm"]:
+        result = _try_load(mt)
+        if result is not None:
+            loaded[mt] = result
+            print(f"Loaded {mt}")
+        else:
+            print(f"  {mt} not found in registry — skipping")
+
+    if not loaded:
+        raise RuntimeError("No active models found in model_registry.")
+
+    # Use feat_cols from LGBM if available, otherwise first loaded model
+    primary_type = "lgbm" if "lgbm" in loaded else next(iter(loaded))
+    _, _, primary_meta = loaded[primary_type]
+    feat_cols = primary_meta["features"]
+
+    # ── Compute per-model SHAP ─────────────────────────────────────────────────
+    per_model_importance: dict[str, np.ndarray] = {}
+    per_model_feats:      dict[str, list]        = {}
+
+    for mt, (model, scaler, meta) in loaded.items():
+        mfeat = meta["features"]
+        try:
+            print(f"Computing SHAP for {mt}...")
+            df_m = _load_feature_store(mfeat)
+            if df_m.empty:
+                print(f"  {mt}: no rows — skip")
+                continue
+            imp = _SHAP_FN[mt](model, scaler, mfeat, df_m.values.astype(float))
+            per_model_importance[mt] = imp
+            per_model_feats[mt]      = mfeat
+            top_feat = mfeat[int(np.argmax(imp))]
+            print(f"  {mt}: done  (top feature: {top_feat}  {imp.max():.4f})")
+        except Exception as exc:
+            print(f"  {mt} SHAP failed: {exc}")
+
+    if not per_model_importance:
+        raise RuntimeError("All model SHAP computations failed.")
+
+    # ── Compute ensemble SHAP (exact for linear combinations) ─────────────────
+    # Φ(Σ wᵢfᵢ) = Σ wᵢ Φ(fᵢ)  — valid because SHAP satisfies linearity
+    ensemble_importance: np.ndarray | None = None
+    ensemble_feat_cols  = feat_cols
+
+    if ens_weights and len(per_model_importance) >= 2:
+        # Average the per-horizon weights into a single scalar weight per model type
+        n_horizons = len(ens_weights)
+        avg_w: dict[str, float] = {mt: 0.0 for mt in ens_order}
+        for w_vec in ens_weights:
+            for i, mt in enumerate(ens_order):
+                avg_w[mt] = avg_w.get(mt, 0.0) + w_vec[i] / n_horizons
+
+        ens_vec   = np.zeros(len(feat_cols))
+        total_w   = 0.0
+        for mt, imp in per_model_importance.items():
+            w = avg_w.get(mt, 0.0)
+            if w <= 0 or per_model_feats[mt] != feat_cols:
+                continue        # skip if not in ensemble or different feature set
+            ens_vec  += w * imp
+            total_w  += w
+
+        if total_w > 0:
+            ensemble_importance = ens_vec / total_w
+            print(f"Ensemble SHAP computed (contributing models: "
+                  f"{[mt for mt in per_model_importance if avg_w.get(mt, 0) > 0]}, "
+                  f"total_w={total_w:.3f})")
+
+    if ensemble_importance is None:
+        # Fall back to primary model
+        ensemble_importance = per_model_importance.get(primary_type,
+                              next(iter(per_model_importance.values())))
+        ensemble_feat_cols  = per_model_feats.get(primary_type,
+                              next(iter(per_model_feats.values())))
+        print(f"Ensemble SHAP unavailable — using {primary_type} as primary.")
+
+    # ── Build top-N ranked lists ───────────────────────────────────────────────
+    def _top_n(features: list, importance: np.ndarray, n: int = TOP_FEATURES) -> list:
+        df_imp = pd.DataFrame({"feature": features, "importance": importance})
+        df_imp = df_imp.sort_values("importance", ascending=False).head(n)
+        return [{"feature": r["feature"], "importance": float(r["importance"])}
+                for _, r in df_imp.iterrows()]
+
+    ensemble_list  = _top_n(ensemble_feat_cols, ensemble_importance)
+    per_model_list = {
+        mt: _top_n(per_model_feats[mt], per_model_importance[mt])
+        for mt in per_model_importance
+    }
+
+    # ── Persist to MongoDB ─────────────────────────────────────────────────────
     get_collection(COLLECTION_SHAP).insert_one({
         "created_at":  datetime.now(timezone.utc),
-        "model_type":  model_type,
-        "explanation": exp_list,
+        "model_type":  "ensemble",
+        "explanation": ensemble_list,   # top-N ensemble importances (dashboard reads this)
+        "per_model":   per_model_list,  # per-model breakdown (for report / extended tab)
     })
 
-    print(f"SHAP: top {TOP_FEATURES} features saved to '{COLLECTION_SHAP}'")
-    for entry in exp_list[:5]:
+    print(f"\nSHAP saved — top {TOP_FEATURES} ensemble features:")
+    for entry in ensemble_list[:5]:
         print(f"  {entry['feature']:<40}  {entry['importance']:.4f}")
+    print(f"\nPer-model coverage: {list(per_model_list.keys())}")
 
 
 if __name__ == "__main__":

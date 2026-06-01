@@ -18,4 +18,5 @@ logs/
 .pytest_cache/
 analysisplots/
 analysistables/
-notebooks/
+notebooks/*
+!notebooks/eda.ipynb
