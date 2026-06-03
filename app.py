@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from datetime import datetime, timezone, timedelta
 
 from config.db import (
     get_collection,
@@ -143,8 +144,11 @@ def load_shap() -> tuple[pd.DataFrame | None, str]:
 
 @st.cache_data(ttl=3600)
 def load_latest_hourly() -> dict | None:
+    # Times stored as naive PKT strings; cap at current PKT hour to exclude
+    # forecast rows the pipeline may have inserted for future hours.
+    now_pkt = (datetime.now(timezone.utc) + timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%S")
     return get_collection(COLLECTION_HOURLY).find_one(
-        {"AQI": {"$exists": True, "$ne": None}},
+        {"AQI": {"$exists": True, "$ne": None}, "time": {"$lte": now_pkt}},
         sort=[("time", -1)],
     )
 

@@ -100,6 +100,12 @@ def run() -> None:
     cutoff_naive = cutoff.replace(tzinfo=None)
     df = df[df["time"] >= cutoff_naive]
 
+    # Drop future hours — Open-Meteo returns forecast rows for the rest of
+    # the current day alongside measured data. now_utc converted to PKT gives
+    # the current wall-clock hour; anything beyond it is a forecast, not a reading.
+    now_pkt_naive = (now_utc + timedelta(hours=5)).replace(tzinfo=None, second=0, microsecond=0)
+    df = df[df["time"] <= now_pkt_naive]
+
     if df.empty:
         print("hourly_feature_store is up to date.")
         return
