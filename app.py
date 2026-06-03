@@ -20,6 +20,7 @@ from config.db import (
     COLLECTION_MODEL_LOGS,
     COLLECTION_LIME,
     COLLECTION_SHAP,
+    COLLECTION_HOURLY,
 )
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -140,6 +141,14 @@ def load_shap() -> tuple[pd.DataFrame | None, str]:
     return None, ""
 
 
+@st.cache_data(ttl=3600)
+def load_latest_hourly() -> dict | None:
+    return get_collection(COLLECTION_HOURLY).find_one(
+        {"AQI": {"$exists": True, "$ne": None}},
+        sort=[("time", -1)],
+    )
+
+
 # ── Page configuration ────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -195,6 +204,7 @@ pred_doc  = load_latest_prediction()
 lime_data = load_lime()
 lime_df, lime_model_type = lime_data if isinstance(lime_data, tuple) else (None, "")
 shap_df, shap_model_type = load_shap()
+hourly_doc = load_latest_hourly()
 
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -220,8 +230,21 @@ with tab1:
         st.warning("No data in feature_store. Run the data pipeline first.")
         st.stop()
 
-    latest       = df.iloc[-1]
-    aqi          = float(latest["AQI"])
+    latest = df.iloc[-1]
+
+    if hourly_doc and hourly_doc.get("AQI") is not None:
+        aqi         = float(hourly_doc["AQI"])
+        _hts        = pd.Timestamp(hourly_doc["time"])
+        _fetched    = hourly_doc.get("fetched_at", "")
+        aqi_time_str = _hts.strftime("%H:%M PKT · %d %b %Y")
+        aqi_fetched_str = (
+            "Fetched " + pd.Timestamp(_fetched).strftime("%H:%M UTC") if _fetched else ""
+        )
+    else:
+        aqi             = float(latest["AQI"])
+        aqi_time_str    = latest["date"].strftime("%d %b %Y")
+        aqi_fetched_str = ""
+
     aqi_label, aqi_color = _aqi_band(aqi)
 
     if aqi > 150:
@@ -263,7 +286,7 @@ with tab1:
             },
             title={
                 "text": f"<b>{aqi_label}</b><br><span style='font-size:0.75em;opacity:0.6'>"
-                        f"{latest['date'].strftime('%d %b %Y')}</span>",
+                        f"{aqi_time_str}</span>",
                 "font": {"size": 18},
             },
         ))
@@ -274,6 +297,8 @@ with tab1:
             font_color="#e0e0e0",
         )
         st.plotly_chart(gauge_fig, use_container_width=True)
+        if aqi_fetched_str:
+            st.caption(aqi_fetched_str)
 
     # ── 4-Day Forecast ───────────────────────────────────────────────────────
     with col_right:

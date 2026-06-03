@@ -211,6 +211,12 @@ def run() -> None:
                     "test_samples":  len(X_te),
                     "holdout_eval":  True,
                     "automated":     os.getenv("AUTOMATED_RUN") == "true",
+                    "training_config": {
+                        "data_start":   "2023-01-01",
+                        "test_days":    60,
+                        "perturb_seed": 42,
+                        "perturb_max":  0.05,
+                    },
                 },
             )
             _log(logs_col, model_type, "success", metrics, model_id)

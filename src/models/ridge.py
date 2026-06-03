@@ -19,7 +19,7 @@ def train_ridge(X_train, y_train, X_test, y_test):
 
     preds = model.predict(X_te)
     metrics = _compute_metrics(y_test, preds)
-    hyperparameters = {"alpha": 1.0}
+    hyperparameters = {"alpha": 1.0, "wrapper": "MultiOutputRegressor", "scaler": "StandardScaler"}
 
     return model, scaler, metrics, hyperparameters
 

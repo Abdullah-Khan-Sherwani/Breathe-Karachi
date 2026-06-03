@@ -107,15 +107,19 @@ def train_lstm(X_train, y_train, X_test, y_test):
     metrics = _compute_metrics(y_true, preds)
 
     hyperparameters = {
-        "seq_len":    SEQ_LEN,
-        "units_1":    64,
-        "units_2":    32,
-        "dropout":    0.4,
-        "l2_reg":     1e-3,
-        "loss":       "huber",
-        "epochs":     150,
-        "patience":   25,
-        "batch_size": 16,
+        "seq_len":          SEQ_LEN,
+        "units_1":          64,
+        "units_2":          32,
+        "dropout":          0.4,
+        "l2_reg":           1e-3,
+        "loss":             "huber",
+        "epochs":           150,
+        "patience":         25,
+        "batch_size":       16,
+        "validation_split": 0.1,
+        "reduce_lr_factor": 0.5,
+        "reduce_lr_patience": 10,
+        "reduce_lr_min_lr": 1e-5,
     }
 
     return model, (x_sc, y_sc), metrics, hyperparameters
