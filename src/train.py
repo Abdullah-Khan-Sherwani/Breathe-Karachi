@@ -79,6 +79,18 @@ def time_split(df: pd.DataFrame, test_days: int = 30):
     return train, test
 
 
+def _perturb_lead_features(df: pd.DataFrame, feat_cols: list[str]) -> None:
+    # During training, lead features (_t1–_t4) are actual future observations.
+    # At inference they come from a forecast API, which carries inherent error.
+    # A small multiplicative jitter (±0–5 %) bridges that gap without distorting
+    # the signal. Deterministic seed keeps runs reproducible.
+    lead_cols = [c for c in feat_cols if any(c.endswith(f"_t{d}") for d in range(1, 5))]
+    if not lead_cols:
+        return
+    rng = np.random.default_rng(42)
+    df[lead_cols] = df[lead_cols].values * (1.0 + rng.uniform(-0.05, 0.05, size=(len(df), len(lead_cols))))
+
+
 def _log(col, model_type: str, status: str, metrics: dict, model_id=None):
     doc: dict = {
         "timestamp":  datetime.now(timezone.utc),
@@ -100,6 +112,7 @@ def _nnls_weights(A: np.ndarray, y: np.ndarray, n_models: int) -> np.ndarray:
 def run() -> None:
     df   = load_data()
     feat = get_feature_cols(df)
+    _perturb_lead_features(df, feat)
 
     train, test = time_split(df, test_days=60)
     if len(test) == 0:

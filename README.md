@@ -46,7 +46,7 @@ Karachi is consistently ranked among the most polluted megacities in the world, 
 │                   GitHub Actions                     │
 │                                                      │
 │  ⏱ Hourly                    📅 Daily               │
-│  update_daily_data.py        lstm_model_training.py  │
+│  update_daily_data.py        train.py                │
 │         │                          │                 │
 │  preprocess_daily_data.py    predict.py              │
 │         │                          │                 │
@@ -78,11 +78,10 @@ Karachi is consistently ranked among the most polluted megacities in the world, 
 
 | Tab | Description |
 |-----|-------------|
-| **Overview** | AQI gauge, today's pollutants and weather readings, 3-day forecast cards with category labels |
-| **AQI Trends** | Time-filtered line chart with EPA AQI category bands (Good → Hazardous) |
-| **Pollutants & LIME** | WHO safe-limit radar chart, pollutant composition pie, LIME feature contribution bar chart |
-| **General Insights** | Worst season, worst recorded day, weekday vs. weekend AQI, WHO exceedance percentage |
-| **Logs** | Full training run history — MAE, RMSE, R² per run |
+| **Live Snapshot** | AQI gauge, today's pollutants and weather readings, 4-day forecast cards with category labels |
+| **AQI Trends** | Time-filtered line chart with EPA AQI category bands (Good → Hazardous) + category distribution bar chart |
+| **Pollution Breakdown** | WHO safe-limit radar chart, pollutant composition pie chart |
+| **Insights** | Worst season, worst recorded day, day-of-week AQI, WHO exceedance %, monthly heatmap |
 
 ---
 
@@ -92,8 +91,8 @@ Karachi is consistently ranked among the most polluted megacities in the world, 
 |-----------|-----------|
 | Data Source | Open-Meteo API (free, no key) |
 | Feature Store & Model Registry | MongoDB Atlas M0 (free tier) |
-| Model | LSTM — TensorFlow / Keras |
-| Explainability | LIME |
+| Models | Ridge + LightGBM + LSTM ensemble (TensorFlow/Keras); Random Forest (experimentation) |
+| Explainability | LIME + SHAP |
 | Dashboard | Streamlit + Plotly |
 | Orchestration | GitHub Actions |
 | Hosting | Render |
@@ -140,9 +139,10 @@ python src/update_daily_data.py
 python src/preprocess_daily_data.py
 
 # Step 3 — train model + generate forecast + explainability
-python src/lstm_model_training.py
+python src/train.py
 python src/predict.py
 python src/create_lime.py
+python src/create_shap.py
 
 # Step 4 — launch dashboard
 streamlit run app.py
@@ -157,7 +157,7 @@ streamlit run app.py
 | `src/fetch_data.py` | Manual (once) | Backfills historical data from Jan 2023 |
 | `src/update_daily_data.py` | Hourly (CI/CD) | Fetches the latest daily row from Open-Meteo |
 | `src/preprocess_daily_data.py` | Hourly (CI/CD) | Computes all engineered features |
-| `src/lstm_model_training.py` | Daily (CI/CD) | Trains LSTM, saves model binary to MongoDB |
+| `src/train.py` | Daily (CI/CD) | Trains Ridge, LightGBM, and LSTM; selects best by RMSE; saves to MongoDB |
 | `src/predict.py` | Daily (CI/CD) | Generates 3-day forecast, writes to MongoDB |
 | `src/create_lime.py` | Daily (CI/CD) | Produces LIME explanation for the latest prediction |
 
@@ -272,10 +272,17 @@ Breathe-Karachi/
 ├── src/
 │   ├── fetch_data.py
 │   ├── update_daily_data.py
+│   ├── update_hourly_data.py
 │   ├── preprocess_daily_data.py
-│   ├── lstm_model_training.py
+│   ├── train.py
 │   ├── predict.py
-│   └── create_lime.py
+│   ├── create_lime.py
+│   ├── create_shap.py
+│   └── models/
+│       ├── ridge.py
+│       ├── lgbm_model.py
+│       ├── lstm_model.py
+│       └── random_forest.py     # experimentation only
 ├── lime_explanations/
 ├── docs/
 ├── app.py
