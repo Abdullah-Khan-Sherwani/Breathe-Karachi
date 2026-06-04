@@ -13,8 +13,8 @@ LAT, LON, TIMEZONE = 24.8607, 67.0011, "Asia/Karachi"
 AIR_URL      = "https://air-quality-api.open-meteo.com/v1/air-quality"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
-_FETCH_TIMEOUT   = 30
-_FETCH_MAX_TRIES = 3
+_FETCH_TIMEOUT   = 60
+_FETCH_MAX_TRIES = 5
 
 
 def _get_json(url: str, params: dict) -> dict:
