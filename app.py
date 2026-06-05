@@ -92,7 +92,7 @@ def load_feature_store() -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_latest_prediction() -> dict | None:
     return get_collection(COLLECTION_PREDICTIONS).find_one(
         {}, sort=[("predicted_at", -1)]
@@ -142,7 +142,7 @@ def load_shap() -> tuple[pd.DataFrame | None, str]:
     return None, ""
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_latest_hourly() -> dict | None:
     # Times stored as naive PKT strings; cap at current PKT hour to exclude
     # forecast rows the pipeline may have inserted for future hours.
