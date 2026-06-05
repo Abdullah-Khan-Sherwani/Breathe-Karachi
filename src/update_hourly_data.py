@@ -87,9 +87,10 @@ def run() -> None:
 
     latest = _latest_stored_time(col)
     now_utc = datetime.now(timezone.utc)
+    now_pkt = now_utc + timedelta(hours=5)   # Open-Meteo date window is in Asia/Karachi (UTC+5)
 
     start_date = latest.date().isoformat()
-    end_date   = now_utc.date().isoformat()
+    end_date   = now_pkt.date().isoformat()  # PKT date — UTC date lags a day during PKT 00:00–04:59
 
     df = _fetch_hourly(start_date, end_date)
     if df is None or df.empty:
@@ -103,7 +104,7 @@ def run() -> None:
     # Drop future hours — Open-Meteo returns forecast rows for the rest of
     # the current day alongside measured data. now_utc converted to PKT gives
     # the current wall-clock hour; anything beyond it is a forecast, not a reading.
-    now_pkt_naive = (now_utc + timedelta(hours=5)).replace(tzinfo=None, second=0, microsecond=0)
+    now_pkt_naive = now_pkt.replace(tzinfo=None, second=0, microsecond=0)
     df = df[df["time"] <= now_pkt_naive]
 
     if df.empty:
