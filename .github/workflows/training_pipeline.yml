@@ -30,6 +30,9 @@ jobs:
       - name: Generate 4-day forecast
         run: python src/predict.py
 
+      - name: Generate PM2.5 shadow forecast
+        run: python scripts/predict_pm25_shadow.py
+
       - name: Generate LIME explanation
         run: python src/create_lime.py
 
