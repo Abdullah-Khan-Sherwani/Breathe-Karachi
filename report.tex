@@ -319,6 +319,26 @@ PM$_{2.5}$ leads and writes results to a separate
 \texttt{predictions\_pm25} collection for ongoing research — without affecting
 the live dashboard.
 
+\subsection{NNLS Ensemble: Added, Then Retired}
+
+\textbf{Context.}\; Before LightGBM overfitting was fixed, the 10.97$\times$ train/test RMSE
+ratio made LightGBM unreliable as a standalone model. A non-negative least squares (NNLS)
+ensemble blend of all three models was introduced to compensate: per-horizon weights were
+fit on a held-out window, letting Ridge and LSTM down-weight the overfit LightGBM
+automatically. This improved overall accuracy and was used in production.
+
+\textbf{Problem after the fix.}\; Once LightGBM was regularised (ratio 1.40$\times$), the
+ensemble became a liability. On the most recent calm-weather window the blend over-trusted
+LSTM at d2–d4, widening the mean error against Open-Meteo from $\approx$2.4 AQI
+(LightGBM-only) to $\approx$5.9 AQI (blend). The ensemble weights were fit on a historical
+holdout that did not represent the current regime, so the blend was systematically
+mis-weighted at serving time.
+
+\textbf{Fix.}\; The ensemble was retired. A lightweight rolling-origin CV (3-fold
+\texttt{TimeSeriesSplit} on the full dataset) now selects a single best model to serve
+each run, falling back to LightGBM on any failure. This is implemented in
+\texttt{\_rolling\_cv\_best()} in \texttt{train.py}.
+
 \subsection{Open-Meteo API Reliability}
 
 \textbf{Problem.}\; GitHub Actions runners intermittently experienced timeouts and
