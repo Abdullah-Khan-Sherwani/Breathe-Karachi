@@ -42,7 +42,9 @@ class TestRidge:
 
     def test_metrics_are_finite(self):
         _, _, metrics, _ = train_ridge(*_make_dataset())
-        for v in metrics.values():
+        for key, v in metrics.items():
+            if key == "_preds":
+                continue   # prediction payload list, not a scalar metric
             assert np.isfinite(v)
 
     def test_rmse_nonnegative(self):
@@ -87,7 +89,9 @@ class TestLGBM:
 
     def test_metrics_finite(self):
         _, _, metrics, _ = train_lgbm(*_make_dataset())
-        for v in metrics.values():
+        for key, v in metrics.items():
+            if key == "_preds":
+                continue   # prediction payload list, not a scalar metric
             assert np.isfinite(v)
 
     def test_rmse_nonnegative(self):
@@ -125,7 +129,9 @@ class TestLSTM:
 
     def test_metrics_finite(self):
         _, _, metrics, _ = train_lstm(*_make_dataset())
-        for v in metrics.values():
+        for key, v in metrics.items():
+            if key == "_preds":
+                continue   # prediction payload list, not a scalar metric
             assert np.isfinite(v)
 
     def test_rmse_nonnegative(self):

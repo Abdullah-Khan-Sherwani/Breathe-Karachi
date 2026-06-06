@@ -1,5 +1,5 @@
 """
-Training orchestrator — loads feature_store, time-aware split (last 60 days = test),
+Training orchestrator — loads feature_store, time-aware split (last 90 days = test),
 trains Ridge + LightGBM + LSTM, selects the best model via rolling-origin CV
 (falls back to LightGBM), retrains on full labeled data, and saves to model_registry.
 """

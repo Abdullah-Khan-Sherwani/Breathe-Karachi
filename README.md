@@ -1,6 +1,6 @@
-# 🌫️ Breathe Karachi
+# Breathe Karachi
 
-> End-to-end serverless AQI forecasting pipeline for Karachi — predicts air quality 3 days ahead using a live LSTM model, automated CI/CD, and an interactive web dashboard.
+> End-to-end serverless AQI forecasting pipeline for Karachi — predicts US Air Quality Index four days ahead using automated ML training, live Open-Meteo data, and an interactive Streamlit dashboard.
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python&logoColor=white)
 ![TensorFlow](https://img.shields.io/badge/TensorFlow-2.16-FF6F00?logo=tensorflow&logoColor=white)
@@ -10,21 +10,7 @@
 ![Render](https://img.shields.io/badge/Deployed_on-Render-46E3B7?logo=render&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-**Live App** → *(coming soon)*
-
----
-
-## Table of Contents
-
-- [About](#about)
-- [Architecture](#architecture)
-- [Dashboard](#dashboard)
-- [Tech Stack](#tech-stack)
-- [Getting Started](#getting-started)
-- [Pipeline Scripts](#pipeline-scripts)
-- [MongoDB Schema](#mongodb-schema)
-- [CI/CD](#cicd)
-- [Project Structure](#project-structure)
+**Live App** → [breathe-karachi.onrender.com](https://breathe-karachi.onrender.com)
 
 ---
 
@@ -33,9 +19,12 @@
 Karachi is consistently ranked among the most polluted megacities in the world, yet real-time air quality forecasting tools tailored to the city remain scarce. **Breathe Karachi** addresses this by building a fully automated, serverless ML system that:
 
 - Fetches live weather and pollution data every hour from [Open-Meteo](https://open-meteo.com/) — no API key required
-- Engineers time-series features and retrains a deep learning model daily
-- Serves 3-day AQI forecasts through a public Streamlit dashboard
-- Stores all data and models in MongoDB Atlas — no files committed to the repo
+- Engineers 141 time-series features per day (lags, rolling statistics, lead features, seasonality)
+- Retrains three model families daily (Ridge Regression, LightGBM, LSTM) and selects the best via rolling-origin cross-validation
+- Serves 4-day AQI forecasts through a public Streamlit dashboard
+- Stores all data, models, and SHAP explanations in MongoDB Atlas — no files committed to the repo
+
+The rolling-CV-selected model (currently LightGBM) achieves **8.8 MAE** and **12.0 RMSE** on a 90-day holdout, and a **3.6 AQI mean error** against live Open-Meteo reference values. Full methodology and results are documented in [`report.tex`](report.tex).
 
 ---
 
@@ -45,43 +34,30 @@ Karachi is consistently ranked among the most polluted megacities in the world, 
 ┌─────────────────────────────────────────────────────┐
 │                   GitHub Actions                     │
 │                                                      │
-│  ⏱ Hourly                    📅 Daily               │
+│  ⏱ Hourly                    📅 Daily (7:19 AM PKT) │
 │  update_daily_data.py        train.py                │
-│         │                          │                 │
-│  preprocess_daily_data.py    predict.py              │
-│         │                          │                 │
-│         └──────────┬───────────────┘                 │
-└──────────────────── │ ────────────────────────────────┘
-                      │
-                      ▼
-              MongoDB Atlas (karachi_aqi)
-          ┌───────────┬──────────────┐
-          │           │              │
-    feature_store  model_registry  predictions
-                      │
-                      ▼
-              Streamlit Dashboard
-              (hosted on Render)
+│  update_hourly_data.py       predict.py              │
+│  preprocess_daily_data.py    create_shap.py          │
+│         │                    create_lime.py          │
+│         └──────────┬─────────────────────────────────┘
+│                    │
+│                    ▼
+│            MongoDB Atlas (karachi_aqi)
+│    feature_store  model_registry  predictions
+│    model_logs     shap_explanations  ensemble_config
+│                    │
+│                    ▼
+│            Streamlit Dashboard (Render)
+└─────────────────────────────────────────────────────┘
 ```
 
-**Data Flow:**
-1. Open-Meteo API → raw daily AQI + weather row → `feature_store`
-2. Feature engineering (lags, rolling stats, log transforms, seasonality) → `feature_store`
-3. LSTM trains on full history → serialized binary stored in `model_registry`
-4. Autoregressive 3-step inference → forecast written to `predictions`
-5. LIME explanation generated on the latest data point
+**Data flow:**
+1. Open-Meteo Archive/Forecast/Air Quality APIs → raw daily row → `feature_store`
+2. Feature engineering (lags, rolling stats, log transforms, lead features, seasonality) → `feature_store`
+3. Three models trained on 90-day holdout eval → rolling-origin CV selects best → full retrain → `model_registry`
+4. 4-day inference from latest feature-store row → `predictions`
+5. SHAP/LIME explanations generated → `shap_explanations`
 6. Dashboard reads everything live from MongoDB
-
----
-
-## Dashboard
-
-| Tab | Description |
-|-----|-------------|
-| **Live Snapshot** | AQI gauge, today's pollutants and weather readings, 4-day forecast cards with category labels |
-| **AQI Trends** | Time-filtered line chart with EPA AQI category bands (Good → Hazardous) + category distribution bar chart |
-| **Pollution Breakdown** | WHO safe-limit radar chart, pollutant composition pie chart |
-| **Insights** | Worst season, worst recorded day, day-of-week AQI, WHO exceedance %, monthly heatmap |
 
 ---
 
@@ -89,12 +65,13 @@ Karachi is consistently ranked among the most polluted megacities in the world, 
 
 | Component | Technology |
 |-----------|-----------|
-| Data Source | Open-Meteo API (free, no key) |
-| Feature Store & Model Registry | MongoDB Atlas M0 (free tier) |
-| Models | Ridge + LightGBM + LSTM ensemble (TensorFlow/Keras); Random Forest (experimentation) |
-| Explainability | LIME + SHAP |
+| Data Source | Open-Meteo Archive, Forecast, and Air Quality APIs (free, no key) |
+| Feature Store & Model Registry | MongoDB Atlas (serverless) |
+| Models | Ridge Regression, LightGBM (PerHorizonWrapper), LSTM (TensorFlow/Keras) |
+| Model Selection | Rolling-origin cross-validation (3 folds, full dataset) |
+| Explainability | SHAP (TreeExplainer / LinearExplainer / Expected Gradients) + LIME |
 | Dashboard | Streamlit + Plotly |
-| Orchestration | GitHub Actions |
+| Orchestration | GitHub Actions + cron-job.org |
 | Hosting | Render |
 
 ---
@@ -138,11 +115,11 @@ python src/fetch_data.py
 python src/update_daily_data.py
 python src/preprocess_daily_data.py
 
-# Step 3 — train model + generate forecast + explainability
+# Step 3 — train models + generate forecast + explainability
 python src/train.py
 python src/predict.py
-python src/create_lime.py
 python src/create_shap.py
+python src/create_lime.py
 
 # Step 4 — launch dashboard
 streamlit run app.py
@@ -150,102 +127,50 @@ streamlit run app.py
 
 ---
 
-## Pipeline Scripts
+## Key Files
 
-| Script | Trigger | Description |
-|--------|---------|-------------|
-| `src/fetch_data.py` | Manual (once) | Backfills historical data from Jan 2023 |
-| `src/update_daily_data.py` | Hourly (CI/CD) | Fetches the latest daily row from Open-Meteo |
-| `src/preprocess_daily_data.py` | Hourly (CI/CD) | Computes all engineered features |
-| `src/train.py` | Daily (CI/CD) | Trains Ridge, LightGBM, and LSTM; selects best by RMSE; saves to MongoDB |
-| `src/predict.py` | Daily (CI/CD) | Generates 3-day forecast, writes to MongoDB |
-| `src/create_lime.py` | Daily (CI/CD) | Produces LIME explanation for the latest prediction |
+| File | Purpose |
+|------|---------|
+| `src/fetch_data.py` | One-time historical backfill from 2018-01-01 |
+| `src/update_daily_data.py` | Hourly: fetch latest daily row from Open-Meteo |
+| `src/update_hourly_data.py` | Hourly: fetch intraday hourly data |
+| `src/preprocess_daily_data.py` | Hourly: engineer all 141 features per row |
+| `src/train.py` | Daily: train Ridge/LightGBM/LSTM, rolling-CV model selection, save to MongoDB |
+| `src/predict.py` | Daily: generate 4-day forecast from latest feature-store row |
+| `src/create_shap.py` | Daily: compute SHAP for all three models, persist to MongoDB |
+| `src/create_lime.py` | Daily: compute LIME explanation for latest prediction |
+| `src/models/lgbm_model.py` | LightGBM with PerHorizonWrapper + two-stage early stopping |
+| `src/models/lstm_model.py` | Stacked LSTM (64→32) with expected-gradients SHAP support |
+| `src/models/ridge.py` | Ridge with StandardScaler + MultiOutputRegressor |
+| `src/models/per_horizon_wrapper.py` | Wraps per-horizon sub-models for LightGBM |
+| `scripts/predict_pm25_shadow.py` | Research shadow pipeline: trains with PM2.5 leads (excluded from prod) |
+| `config/db.py` | MongoDB connection, model serialization, collection helpers |
+| `app.py` | Streamlit dashboard entry point |
+| `report.tex` | Full methodology and results report |
 
 ---
 
-## MongoDB Schema
+## MongoDB Collections
 
-**Database:** `karachi_aqi`
-
-<details>
-<summary><code>feature_store</code> — one document per calendar day</summary>
-
-```json
-{
-  "date": "2024-01-15",
-  "AQI": 145.3,
-  "PM2.5": 67.2, "PM10": 89.1, "NO2": 34.5,
-  "SO2": 12.3, "CO": 890.0, "O3": 45.6,
-  "Temperature": 28.4, "Humidity": 65.0, "Precipitation": 0.0,
-  "AQI_lag_1": 138.2, "AQI_lag_2": 142.1,
-  "AQI_roll_mean_3": 141.9, "AQI_roll_std_3": 3.6, "AQI_diff": 7.1,
-  "log_PM2.5": 4.21, "log_CO": 6.79,
-  "month": 1, "season_Winter": 1, "weekday_0": 1,
-  "AQI_t+1": 150.1, "AQI_t+2": 148.7, "AQI_t+3": 143.2,
-  "processed_at": "2024-01-15T08:00:00Z"
-}
-```
-</details>
-
-<details>
-<summary><code>model_registry</code> — serialized model per training run</summary>
-
-```json
-{
-  "model_type": "lstm",
-  "version": "20240115_083000",
-  "trained_at": "2024-01-15T08:30:00Z",
-  "status": "active",
-  "model_binary": "BinData(...)",
-  "scaler_binary": "BinData(...)",
-  "features": ["AQI", "PM10", "NO2", "..."],
-  "hyperparameters": { "seq_len": 7, "units_1": 64, "units_2": 32, "dropout": 0.2 },
-  "MAE": 12.4, "RMSE": 18.3, "R2": 0.87,
-  "train_samples": 320, "test_samples": 80
-}
-```
-</details>
-
-<details>
-<summary><code>predictions</code> — 3-day forecast per daily run</summary>
-
-```json
-{
-  "predicted_at": "2024-01-15T09:00:00Z",
-  "model_id": "ObjectId(...)",
-  "forecasts": [
-    { "date": "2024-01-16", "predicted_AQI": 152.3 },
-    { "date": "2024-01-17", "predicted_AQI": 148.1 },
-    { "date": "2024-01-18", "predicted_AQI": 144.7 }
-  ]
-}
-```
-</details>
-
-<details>
-<summary><code>model_logs</code> — lightweight metrics per training run</summary>
-
-```json
-{
-  "timestamp": "2024-01-15T08:30:00Z",
-  "status": "success",
-  "model_id": "ObjectId(...)",
-  "MAE": 12.4, "RMSE": 18.3, "R2": 0.87,
-  "train_samples": 320, "test_samples": 80
-}
-```
-</details>
+| Collection | Contents |
+|------------|---------|
+| `feature_store` | One document per calendar day; 141+ engineered features + AQI targets |
+| `model_registry` | Serialized model binaries + scaler + metrics + feature list |
+| `predictions` | 4-day AQI forecasts per daily run |
+| `model_logs` | Lightweight per-run training metrics for all three models |
+| `ensemble_config` | Rolling-CV-selected model order and weights |
+| `shap_explanations` | Per-model and ensemble SHAP feature importances |
 
 ---
 
 ## CI/CD
 
-Two GitHub Actions workflows run automatically:
+Two GitHub Actions workflows triggered via `workflow_dispatch` from cron-job.org:
 
 | Workflow | Schedule | Steps |
 |----------|----------|-------|
-| `feature_pipeline.yml` | Every hour | Fetch → Preprocess → Store to MongoDB |
-| `training_pipeline.yml` | Every day at 08:00 PKT | Train → Predict → LIME → Trigger Render deploy |
+| `feature_pipeline.yml` | Every hour | Fetch daily → fetch hourly → preprocess → store to MongoDB |
+| `training_pipeline.yml` | Daily 7:19 AM PKT | Train → predict → shadow forecast → LIME → SHAP |
 
 **Required GitHub Secrets:**
 
@@ -253,43 +178,6 @@ Two GitHub Actions workflows run automatically:
 MONGODB_USERNAME
 MONGODB_PASSWORD
 MONGODB_CLUSTER
-RENDER_DEPLOY_HOOK
-```
-
----
-
-## Project Structure
-
-```
-Breathe-Karachi/
-├── .github/
-│   └── workflows/
-│       ├── feature_pipeline.yml
-│       └── training_pipeline.yml
-├── config/
-│   ├── __init__.py
-│   └── db.py                    # MongoDB connection + model serialization
-├── src/
-│   ├── fetch_data.py
-│   ├── update_daily_data.py
-│   ├── update_hourly_data.py
-│   ├── preprocess_daily_data.py
-│   ├── train.py
-│   ├── predict.py
-│   ├── create_lime.py
-│   ├── create_shap.py
-│   └── models/
-│       ├── ridge.py
-│       ├── lgbm_model.py
-│       ├── lstm_model.py
-│       └── random_forest.py     # experimentation only
-├── lime_explanations/
-├── docs/
-├── app.py
-├── requirements.txt
-├── render.yaml
-├── .env.example
-└── CLAUDE.md
 ```
 
 ---

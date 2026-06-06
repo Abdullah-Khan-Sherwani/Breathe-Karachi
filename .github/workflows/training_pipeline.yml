@@ -1,7 +1,7 @@
 name: Training Pipeline
 
 on:
-  workflow_dispatch:  # triggered externally by cron-job.org daily at 1:20 AM PKT
+  workflow_dispatch:  # triggered externally by cron-job.org daily at 7:19 AM PKT
 
 jobs:
   train-and-deploy:
