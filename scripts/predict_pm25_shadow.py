@@ -38,8 +38,8 @@ def run() -> None:
     _perturb_lead_features(df, feat)
     print(f"[shadow] features={len(feat)} (incl PM2_5 leads) | labeled rows={len(df)}")
 
-    # 1) ensemble weights from a 60-day holdout (per-horizon nnls), like train.py
-    tr, te = time_split(df, test_days=60)
+    # 1) ensemble weights from a 90-day holdout (per-horizon nnls), like train.py
+    tr, te = time_split(df, test_days=90)
     Xtr, ytr = tr[feat].values, tr[TARGET_COLS].values
     Xte, yte = te[feat].values, te[TARGET_COLS].values
     preds = {}

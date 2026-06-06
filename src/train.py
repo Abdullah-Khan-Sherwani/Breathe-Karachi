@@ -1,7 +1,7 @@
 """
-Training orchestrator — loads feature_store, time-aware split (last 30 days = test),
-trains Ridge + LightGBM + LSTM, computes nnls ensemble weights, saves all to
-model_registry, and logs runs to model_logs.
+Training orchestrator — loads feature_store, time-aware split (last 60 days = test),
+trains Ridge + LightGBM + LSTM, selects the best model via rolling-origin CV
+(falls back to LightGBM), retrains on full labeled data, and saves to model_registry.
 """
 
 import sys
@@ -45,7 +45,7 @@ EXCLUDE_COLS = {
     "wind_speed_80m_lag_1", "wind_speed_80m_roll_mean_7",
     "cape", "cape_t1", "cape_t2", "cape_t3", "cape_t4",
     "cape_lag_1", "cape_roll_mean_7",
-    # PM2_5 leads excluded: dominant AQI driver inflates metrics; CAMS forecast used at inference instead
+    # PM2_5 leads excluded: dominant AQI driver; Open-Meteo AQ API values are unstable between fetches
     "PM2_5_t1", "PM2_5_t2", "PM2_5_t3", "PM2_5_t4",
 } | set(TARGET_COLS)
 
@@ -154,7 +154,7 @@ def run() -> None:
     feat = get_feature_cols(df)
     _perturb_lead_features(df, feat)
 
-    train, test = time_split(df, test_days=60)
+    train, test = time_split(df, test_days=90)
     if len(test) == 0:
         raise RuntimeError("Test split is empty — need at least 30 days of data.")
 
@@ -170,7 +170,7 @@ def run() -> None:
     eval_trainers = [("lgbm", train_lgbm), ("lstm", train_lstm), ("ridge", train_ridge)]
     full_trainers = {"lgbm": train_lgbm_full, "lstm": train_lstm_full, "ridge": train_ridge_full}
 
-    # Step 1 — evaluate each model on 30-day holdout
+    # Step 1 — evaluate each model on 90-day holdout
     holdout: dict = {}
     holdout_preds: dict = {}
     for model_type, trainer in eval_trainers:
@@ -242,7 +242,7 @@ def run() -> None:
                     "automated":     os.getenv("AUTOMATED_RUN") == "true",
                     "training_config": {
                         "data_start":   "2023-01-01",
-                        "test_days":    60,
+                        "test_days":    90,
                         "perturb_seed": 42,
                         "perturb_max":  0.05,
                     },
