@@ -328,8 +328,7 @@ with tab1:
                     </div>""", unsafe_allow_html=True)
             pred_time = pred_doc.get("predicted_at")
             if pred_time:
-                st.caption(f"Generated {pred_time.strftime('%d %b %Y %H:%M UTC')} · "
-                           f"model: {pred_doc.get('model_type', '—')}")
+                st.caption(f"Generated {pred_time.strftime('%d %b %Y %H:%M UTC')}")
         else:
             st.info("No forecast yet. Run `python src/predict.py` to generate one.")
 
