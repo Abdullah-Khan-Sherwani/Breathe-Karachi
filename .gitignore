@@ -21,3 +21,16 @@ analysisplots/
 analysistables/
 notebooks/*
 !notebooks/eda.ipynb
+
+# LaTeX build artifacts
+report.aux
+report.log
+report.out
+report.synctex.gz
+report.md
+
+# Local analysis / diagnostic scripts
+model_report.txt
+scripts/diag_*.py
+scripts/check_overfitting.py
+scripts/compare_vs_openmeteo.py
