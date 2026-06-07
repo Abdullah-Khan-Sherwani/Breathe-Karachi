@@ -24,7 +24,7 @@ Karachi is consistently ranked among the most polluted megacities in the world, 
 - Serves 4-day AQI forecasts through a public Streamlit dashboard
 - Stores all data, models, and SHAP explanations in MongoDB Atlas — no files committed to the repo
 
-The rolling-CV-selected model (currently LightGBM) achieves **8.8 MAE** and **12.0 RMSE** on a 90-day holdout, and a **3.6 AQI mean error** against live Open-Meteo reference values. Full methodology and results are documented in [`report.tex`](report.tex).
+The rolling-CV-selected model (currently LightGBM) achieves **8.8 MAE** and **12.0 RMSE** on a 90-day holdout, and a **3.6 AQI mean error** against live Open-Meteo reference values. Full methodology and results are documented in [`report.pdf`](report.pdf).
 
 ---
 
@@ -146,7 +146,7 @@ streamlit run app.py
 | `scripts/predict_pm25_shadow.py` | Research shadow pipeline: trains with PM2.5 leads (excluded from prod) |
 | `config/db.py` | MongoDB connection, model serialization, collection helpers |
 | `app.py` | Streamlit dashboard entry point |
-| `report.tex` | Full methodology and results report |
+| `report.pdf` | Full methodology and results report |
 
 ---
 
